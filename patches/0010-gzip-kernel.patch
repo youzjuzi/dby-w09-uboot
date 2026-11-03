@@ -1,0 +1,135 @@
+--- a/arch/arm/mach-snapdragon/board.c
++++ b/arch/arm/mach-snapdragon/board.c
+@@ -522,6 +522,7 @@
+ /* Stolen from arch/arm/mach-apple/board.c */
+ /* SD-only bring-up: zero unless the dedicated load slot was successfully reserved. */
+ phys_addr_t dby_kernel_buffer;
++phys_addr_t dby_kernel_comp_buffer;
+ phys_addr_t dby_initrd_buffer, dby_fdt_buffer;
+ int board_late_init(void)
+ {
+@@ -537,8 +538,13 @@
+ 	status |= !lmb_alloc(SZ_128M, &addr) ?
+ 		env_set_hex("ramdisk_addr_r", addr) : 1;
+ 	if (!status) dby_initrd_buffer = addr;
+-	status |= !lmb_alloc(KERNEL_COMP_SIZE, &addr) ?
+-		env_set_hex("kernel_comp_addr_r", addr) : 1;
++	dby_kernel_comp_buffer = 0;
++	if (!lmb_alloc(KERNEL_COMP_SIZE, &addr)) {
++		dby_kernel_comp_buffer = addr;
++		status |= env_set_hex("kernel_comp_addr_r", addr);
++	} else {
++		status |= 1;
++	}
+ 	status |= env_set_hex("kernel_comp_size", KERNEL_COMP_SIZE);
+ 	status |= !lmb_alloc(SZ_4M, &addr) ?
+ 		env_set_hex("scriptaddr", addr) : 1;
+--- a/cmd/sd-read.c
++++ b/cmd/sd-read.c
+@@ -24,16 +24,19 @@
+ #include <time.h>
+ #include <linux/libfdt.h>
+ #include <image.h>
++#include <gzip.h>
+ #include <asm/byteorder.h>
+ #include <linux/sizes.h>
+ int dby_boot_misc_status(void);
+-extern phys_addr_t dby_kernel_buffer;
++extern phys_addr_t dby_kernel_buffer, dby_kernel_comp_buffer;
+ extern phys_addr_t dby_initrd_buffer, dby_fdt_buffer;
+ static bool invoked;
+ /* Included into the inherited sd-read.c; no general-purpose card commands. */
+ #define DBY_LINUX_ARGS "console=tty0 clk_ignore_unused pd_ignore_unused rdinit=/init panic=10 loglevel=7"
++#define KERNEL_COMP_SIZE SZ_64M
+ struct dby_sd_stats {
+-	u64 bytes, read_ms, sha_ms, init_ms;
++	u64 bytes, read_ms, sha_ms, init_ms, unzip_ms;
++	bool kernel_gz;
+ };
+ static inline bool dby_dma64_supported(u32 caps)
+ {
+@@ -49,12 +52,44 @@
+ 
+ 	n = snprintf(buf, capacity, DBY_LINUX_ARGS
+ 		     " dby.sd_bytes=%llu dby.sd_read_ms=%llu dby.sd_sha_ms=%llu"
+-		     " dby.sd_init_ms=%llu dby.sd_dma=%s",
++		     " dby.sd_init_ms=%llu dby.sd_dma=%s"
++		     " dby.sd_kernel=%s dby.sd_unzip_ms=%llu",
+ 		     (unsigned long long)stats->bytes,
+ 		     (unsigned long long)stats->read_ms,
+ 		     (unsigned long long)stats->sha_ms,
+-		     (unsigned long long)stats->init_ms, dma);
++		     (unsigned long long)stats->init_ms, dma,
++		     stats->kernel_gz ? "gz" : "raw",
++		     (unsigned long long)stats->unzip_ms);
+ 	return n < 0 || (size_t)n >= capacity ? -E2BIG : 0;
++}
++static int dby_prepare_kernel(ulong source, ulong *size,
++				  struct dby_sd_stats *stats, const char **step)
++{
++	const u8 *data = (const u8 *)source;
++	ulong output = *size, started;
++	int ret = 0;
++
++	if (!dby_kernel_buffer || (dby_kernel_buffer & (SZ_2M - 1)))
++		return -EFBIG;
++	stats->kernel_gz = *size >= 2 && data[0] == 0x1f && data[1] == 0x8b;
++	if (stats->kernel_gz)
++		*step = "SD kernel gunzip";
++	started = get_timer(0);
++	if (stats->kernel_gz) {
++		if (*size < 18)
++			ret = -EINVAL;
++		else
++			ret = gunzip((void *)dby_kernel_buffer, SZ_128M,
++				     (unsigned char *)source, &output);
++	} else {
++		memcpy((void *)dby_kernel_buffer, (const void *)source, *size);
++	}
++	stats->unzip_ms = get_timer(started);
++	if (ret || !output || output > SZ_128M)
++		return -EINVAL;
++	*size = output;
++	*step = "SD payload hash / booti";
++	return 0;
+ }
+ static u64 dby_sd_init_ms;
+ static int hex_digit(char c)
+@@ -81,11 +116,11 @@
+  }
+  return p==bytes ? 0 : -EINVAL;
+ }
+-static int dby_load_boot(void)
++static int dby_load_boot(const char **step)
+ {
+  const char *names[3]={"/UBOOT/Image","/UBOOT/dby-w09.dtb","/UBOOT/initrd.img"};
+- ulong addresses[3]={dby_kernel_buffer,dby_fdt_buffer,dby_initrd_buffer};
+- const ulong caps[3]={SZ_128M,SZ_2M-0x10000,SZ_128M};
++ ulong addresses[3]={dby_kernel_comp_buffer,dby_fdt_buffer,dby_initrd_buffer};
++ const ulong caps[3]={KERNEL_COMP_SIZE,SZ_2M-0x10000,SZ_128M};
+  char manifest[256], command[128], bootargs[512];
+  struct dby_sd_stats stats = { .init_ms = dby_sd_init_ms };
+  ulong started; u8 expected[3][32],digest[32];
+@@ -111,6 +146,13 @@
+   stats.sha_ms+=get_timer(started);
+   ret=memcmp(digest,expected[i],32)?-EIO:0;
+   if(ret)return ret;
++  if(i==0) {
++   ulong kernel_size=size;
++   ret=dby_prepare_kernel(addresses[0],&kernel_size,&stats,step);
++   if(ret)return ret;
++   addresses[0]=dby_kernel_buffer;
++   size=kernel_size;
++  }
+   sizes[i]=size;
+  }
+  /* booti's relocation decision must keep the Image in the verified 128 MiB slot. */
+@@ -221,7 +263,7 @@
+ 	if (ret == -ENOENT) ret = 0;
+ 	if (ret) goto done;
+ 	step = "SD payload hash / booti";
+-	ret = dby_load_boot();
++	ret = dby_load_boot(&step);
+ done:
+ 	if (dir) fat_closedir(dir);
+ 	fat_close();

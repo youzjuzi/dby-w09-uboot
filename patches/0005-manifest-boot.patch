@@ -1,0 +1,240 @@
+--- /dev/null
++++ b/cmd/sd-read.c
+@@ -0,0 +1,195 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* Verified SD boot: inherited SD read workflow followed by hash-checked Linux booti. */
++#include <diagnostic.h>
++#include <command.h>
++#include <version.h>
++#include <console.h>
++#include <dm.h>
++#include <dm/uclass.h>
++#include <dm/uclass-internal.h>
++#include <asm/gpio.h>
++#include <mmc.h>
++#include <blk.h>
++#include <part.h>
++#include <fat.h>
++#include <fs.h>
++#include <env.h>
++#include <power/regulator.h>
++#include <u-boot/sha256.h>
++#include <video.h>
++#include <video_console.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <time.h>
++#include <linux/libfdt.h>
++#include <image.h>
++#include <asm/byteorder.h>
++#include <linux/sizes.h>
++int dby_clear_misc(void);
++extern phys_addr_t dby_kernel_buffer;
++extern phys_addr_t dby_initrd_buffer, dby_fdt_buffer;
++static bool invoked;
++/* Included into the inherited sd-read.c; no general-purpose card commands. */
++#define DBY_LINUX_ARGS "console=tty0 clk_ignore_unused pd_ignore_unused rdinit=/init panic=10 loglevel=7"
++static int hex_digit(char c)
++{
++ if(c>='0'&&c<='9')return c-'0';
++ if(c>='a'&&c<='f')return c-'a'+10;
++ return -1;
++}
++/* Exact sha256sum format, fixed order, exactly three LF-terminated records. */
++static int dby_parse_manifest(const char *data, size_t bytes, u8 expected[3][32])
++{
++ const char *names[3]={"Image","dby-w09.dtb","initrd.img"};
++ size_t p=0,n; int i,j,a,b;
++ for(i=0;i<3;i++) {
++  n=strlen(names[i]);
++  if(bytes-p<67+n)return -EINVAL;
++  for(j=0;j<32;j++) {
++   a=hex_digit(data[p+2*j]);b=hex_digit(data[p+2*j+1]);
++   if(a<0||b<0)return -EINVAL;
++   expected[i][j]=(a<<4)|b;
++  }
++  if(data[p+64]!=' '||data[p+65]!=' '||memcmp(data+p+66,names[i],n)||data[p+66+n]!='\n')return -EINVAL;
++  p+=67+n;
++ }
++ return p==bytes ? 0 : -EINVAL;
++}
++static int dby_load_boot(void)
++{
++ const char *names[3]={"/UBOOT/Image","/UBOOT/dby-w09.dtb","/UBOOT/initrd.img"};
++ ulong addresses[3]={dby_kernel_buffer,dby_fdt_buffer,dby_initrd_buffer};
++ const ulong caps[3]={SZ_128M,SZ_2M-0x10000,SZ_128M};
++ char manifest[256], command[128]; u8 expected[3][32],digest[32];
++ loff_t size,got,sizes[3]; ulong relocated,image_size; int ret,i;
++ ret=fat_size("/UBOOT/MANIFEST",&size);
++ if(!ret && (size<=0||size>=sizeof(manifest)))ret=-EFBIG;
++ if(!ret)ret=fat_read_file("/UBOOT/MANIFEST",manifest,0,size,&got);
++ if(!ret && got!=size)ret=-EIO;
++ if(!ret)ret=dby_parse_manifest(manifest,size,expected);
++ if(ret)return ret;
++ for(i=0;i<3;i++) {
++  ret=fat_size(names[i],&size);
++  if(!ret && (!addresses[i] || (addresses[i]&(SZ_2M-1)) || size<=0 || size>caps[i]))ret=-EFBIG;
++  if(ret)return ret;
++  ret=fat_read_file(names[i],(void *)addresses[i],0,size,&got);
++  if(!ret && got!=size)ret=-EIO;
++  if(ret)return ret;
++  sha256_csum_wd((void *)addresses[i],size,digest,65536);
++  ret=memcmp(digest,expected[i],32)?-EIO:0;
++  if(ret)return ret;
++  sizes[i]=size;
++ }
++ /* booti's relocation decision must keep the Image in the verified 128 MiB slot. */
++ ret=sizes[0]>=64 ? booti_setup(addresses[0],&relocated,&image_size,false) : -EINVAL;
++ if(!ret && (relocated!=addresses[0] || image_size<sizes[0] || image_size>SZ_128M))ret=-EINVAL;
++ if(!ret && (fdt_check_header((void *)addresses[1]) || fdt_totalsize((void *)addresses[1])!=sizes[1]))ret=-EINVAL;
++ if(ret)return ret;
++ fat_close();
++ /* No env/script/bootargs are read from SD. Both buffers are aligned, padded slots. */
++ ret=env_set("bootargs",DBY_LINUX_ARGS);
++ ret|=env_set("initrd_high","ffffffffffffffff");
++ ret|=env_set("fdt_high","ffffffffffffffff");
++ if(ret)return -EINVAL;
++ snprintf(command,sizeof(command),"booti %lx %lx:%llx %lx",addresses[0],addresses[2],(unsigned long long)sizes[2],addresses[1]);
++ exp_diag_sd(0,"SD payload hash / booti",0);exp_diag_flush();
++ ret=run_command(command,0);
++ return ret ? ret : -EIO; /* Any return is a failed handoff; inherited countdown/reset. */
++}
++static int power_rail(const char *name)
++{
++	struct udevice *dev;
++	int ret;
++
++	ret = regulator_get_by_devname(name, &dev);
++	if (ret) return ret;
++	ret = regulator_set_value(dev, 2960000);
++	if (ret) return ret;
++	ret = regulator_set_enable(dev, true);
++	return ret;
++}
++static int diagnostic_fat_probe(struct blk_desc *desc, struct disk_partition *part)
++{
++ int ret;
++ ret = fat_set_blk_dev(desc, part);
++ return ret;
++}
++static int do_sdread(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
++{
++	struct udevice *gpio = NULL, *host = NULL, *vc = NULL;
++	struct mmc *mmc;
++	struct blk_desc *desc;
++	struct disk_partition part, chosen;
++	struct fs_dir_stream *dir = NULL;
++	struct fs_dirent *entry;
++	int ret = -EPERM, misc_ret = -EPERM, p, first = 0, level, i;
++	const char *step = "already invoked";
++	console_assign(stdout, "vidconsole"); console_assign(stderr, "vidconsole");
++	/* Existing ANSI renderer: bold white (index 15), black (index 0). */
++	puts("\x1b[0;1;37;40m");
++	console_clear();
++	puts("DBY-W09 SD LINUX BOOT " PLAIN_VERSION "\n");
++
++	if (invoked) goto done;
++	invoked = true;
++	misc_ret = dby_clear_misc();
++	if (misc_ret) { ret=misc_ret; step="misc clear failed"; goto done; }
++	step = "GPIO77";
++	ret = uclass_get_device(UCLASS_GPIO, 0, &gpio);
++	level = ret ? ret : gpio_get_ops(gpio)->get_value(gpio, 77);
++	ret = level < 0 ? level : 0;
++
++	if (ret) goto done;
++	step = "ldoc9 power"; ret = power_rail("ldoc9"); if (ret) goto done;
++	step = "ldoc6 power"; ret = power_rail("ldoc6"); if (ret) goto done;
++	mdelay(5);
++	step = "controller probe";
++	ret = uclass_get_device(UCLASS_MMC, 0, &host);
++	if (ret) goto done;
++	mmc = mmc_get_mmc_dev(host);
++
++	step = "card identification";
++	ret = mmc ? mmc_init(mmc) : -ENODEV;
++	if (ret) goto done;
++	ret = IS_SD(mmc) ? 0 : -EPERM;
++
++	if (ret) goto done;
++	desc = mmc_get_blk_desc(mmc);
++	step = "partition table / first FAT";
++	/* Each partition is inspected once; the first FAT is remembered. */
++	for (p = 1; p <= 128; p++) {
++		ret = part_get_info(desc, p, &part);
++		if (ret) break;
++
++		if (!first && !diagnostic_fat_probe(desc, &part)) { first=p; chosen=part; }
++	}
++	ret = first ? 0 : -ENOENT;
++	if (ret) goto done;
++	ret = fat_set_blk_dev(desc, &chosen);
++	if (ret) goto done;
++	step = "root listing";
++	ret = fat_opendir("/", &dir);
++	if (ret) goto done;
++	while (!(ret = fat_readdir(dir, &entry))) {
++	}
++	fat_closedir(dir); dir = NULL;
++	if (ret == -ENOENT) ret = 0;
++	if (ret) goto done;
++	step = "SD payload hash / booti";
++	ret = dby_load_boot();
++done:
++	if (dir) fat_closedir(dir);
++	fat_close();
++	exp_diag_sd(ret, step, misc_ret);
++	exp_diag_flush();
++	uclass_find_first_device(UCLASS_VIDEO_CONSOLE, &vc);
++	for (i=120;i>0;i--) {
++		if (vc) vidconsole_position_cursor(vc, 0, 78);
++		printf("RESET IN %3d s   ", i);
++		exp_diag_flush();
++		mdelay(1000);
++	}
++	run_command("reset", 0);
++	return CMD_RET_FAILURE;
++}
++U_BOOT_CMD(sdread, 1, 0, do_sdread, "hash-checked Linux booti after misc clear", "");
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -301,3 +301,7 @@
+ 	$(call filechk,data_size)
+ 
+ CFLAGS_ethsw.o := -Wno-enum-conversion
++
++obj-y += misc-clear.o
++
++obj-y += sd-read.o
+--- a/arch/arm/mach-snapdragon/board.c
++++ b/arch/arm/mach-snapdragon/board.c
+@@ -520,6 +520,9 @@
+ #define lmb_alloc(size, addr) lmb_alloc_mem(LMB_MEM_ALLOC_ANY, SZ_2M, addr, size, LMB_NONE)
+ 
+ /* Stolen from arch/arm/mach-apple/board.c */
++/* SD-only bring-up: zero unless the dedicated load slot was successfully reserved. */
++phys_addr_t dby_kernel_buffer;
++phys_addr_t dby_initrd_buffer, dby_fdt_buffer;
+ int board_late_init(void)
+ {
+ 	u32 status = 0, fdt_status = 0;
+@@ -529,9 +532,11 @@
+ 	/* We need to be fairly conservative here as we support boards with just 1G of TOTAL RAM */
+ 	status |= !lmb_alloc(SZ_128M, &addr) ?
+ 		env_set_hex("loadaddr", addr) : 1;
++	if (!status) dby_kernel_buffer = addr;
+ 	status |= env_set_hex("kernel_addr_r", addr);
+ 	status |= !lmb_alloc(SZ_128M, &addr) ?
+ 		env_set_hex("ramdisk_addr_r", addr) : 1;
++	if (!status) dby_initrd_buffer = addr;
+ 	status |= !lmb_alloc(KERNEL_COMP_SIZE, &addr) ?
+ 		env_set_hex("kernel_comp_addr_r", addr) : 1;
+ 	status |= env_set_hex("kernel_comp_size", KERNEL_COMP_SIZE);
+@@ -554,6 +559,7 @@
+ 
+ 	fdt_status |= !lmb_alloc(SZ_2M, &addr) ?
+ 		env_set_hex("fdt_addr_r", addr) : 1;
++	if (!fdt_status) dby_fdt_buffer = addr;
+ 
+ 	if (IS_ENABLED(CONFIG_OF_LIBFDT_OVERLAY)) {
+ 		status |= !lmb_alloc(SZ_1M, &addr) ?

@@ -1,0 +1,140 @@
+--- a/cmd/nvedit.c
++++ b/cmd/nvedit.c
+@@ -466,11 +466,7 @@
+ 	return env_save() ? 1 : 0;
+ }
+ 
+-U_BOOT_CMD(
+-	saveenv, 1, 0,	do_env_save,
+-	"save environment variables to persistent storage",
+-	""
+-);
++/* Storage write protection: environment editing CLI removed. */
+ 
+ #if defined(CONFIG_CMD_ERASEENV)
+ static int do_env_erase(struct cmd_tbl *cmdtp, int flag, int argc,
+@@ -479,11 +475,7 @@
+ 	return env_erase() ? 1 : 0;
+ }
+ 
+-U_BOOT_CMD(
+-	eraseenv, 1, 0,	do_env_erase,
+-	"erase environment variables from persistent storage",
+-	""
+-);
++/* Storage write protection: environment editing CLI removed. */
+ #endif
+ #endif
+ 
+@@ -1200,100 +1192,30 @@
+ #endif
+ 	"env set [-f] name [arg ...]\n");
+ 
+-U_BOOT_CMD(
+-	env, CONFIG_SYS_MAXARGS, 1, do_env,
+-	"environment handling commands", env_help_text
+-);
++/* Storage write protection: environment editing CLI removed. */
+ 
+ /*
+  * Old command line interface, kept for compatibility
+  */
+ 
+ #if defined(CONFIG_CMD_EDITENV)
+-U_BOOT_CMD_COMPLETE(
+-	editenv, 2, 0,	do_env_edit,
+-	"edit environment variable",
+-	"name\n"
+-	"    - edit environment variable 'name'",
+-	var_complete
+-);
+-#endif
+-
+-U_BOOT_CMD_COMPLETE(
+-	printenv, CONFIG_SYS_MAXARGS, 1,	do_env_print,
+-	"print environment variables",
+-	"[-a]\n    - print [all] values of all environment variables\n"
+-#if defined(CONFIG_CMD_NVEDIT_EFI)
+-	"printenv -e [-guid guid][-n] [name ...]\n"
+-	"    - print UEFI variable 'name' or all the variables\n"
+-	"      \"-guid\": GUID xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n"
+-	"      \"-n\": suppress dumping variable's value\n"
+-#endif
+-	"printenv name ...\n"
+-	"    - print value of environment variable 'name'",
+-	var_complete
+-);
++/* Storage write protection: environment editing CLI removed. */
++#endif
++
++/* Storage write protection: environment editing CLI removed. */
+ 
+ #ifdef CONFIG_CMD_GREPENV
+-U_BOOT_CMD_COMPLETE(
+-	grepenv, CONFIG_SYS_MAXARGS, 0,  do_env_grep,
+-	"search environment variables",
+-#ifdef CONFIG_REGEX
+-	"[-e] [-n | -v | -b] string ...\n"
+-#else
+-	"[-n | -v | -b] string ...\n"
+-#endif
+-	"    - list environment name=value pairs matching 'string'\n"
+-#ifdef CONFIG_REGEX
+-	"      \"-e\": enable regular expressions;\n"
+-#endif
+-	"      \"-n\": search variable names; \"-v\": search values;\n"
+-	"      \"-b\": search both names and values (default)",
+-	var_complete
+-);
+-#endif
+-
+-U_BOOT_CMD_COMPLETE(
+-	setenv, CONFIG_SYS_MAXARGS, 0,	do_env_set,
+-	"set environment variables",
+-#if defined(CONFIG_CMD_NVEDIT_EFI)
+-	"-e [-guid guid][-nv][-bs][-rt][-at][-a][-v]\n"
+-	"        [-i addr:size name], or [name [value ...]]\n"
+-	"    - set UEFI variable 'name' to 'value' ...'\n"
+-	"      \"-guid\": GUID xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx\n"
+-	"      \"-nv\": set non-volatile attribute\n"
+-	"      \"-bs\": set boot-service attribute\n"
+-	"      \"-rt\": set runtime attribute\n"
+-	"      \"-at\": set time-based authentication attribute\n"
+-	"      \"-a\": append-write\n"
+-	"      \"-i addr:size\": use <addr,size> as variable's value\n"
+-	"      \"-v\": verbose message\n"
+-	"    - delete UEFI variable 'name' if 'value' not specified\n"
+-#endif
+-	"setenv [-f] name value ...\n"
+-	"    - [forcibly] set environment variable 'name' to 'value ...'\n"
+-	"setenv [-f] name\n"
+-	"    - [forcibly] delete environment variable 'name'",
+-	var_complete
+-);
++/* Storage write protection: environment editing CLI removed. */
++#endif
++
++/* Storage write protection: environment editing CLI removed. */
+ 
+ #if defined(CONFIG_CMD_ASKENV)
+ 
+-U_BOOT_CMD(
+-	askenv,	CONFIG_SYS_MAXARGS,	1,	do_env_ask,
+-	"get environment variables from stdin",
+-	"name [message] [size]\n"
+-	"    - get environment variable 'name' from stdin (max 'size' chars)"
+-);
++/* Storage write protection: environment editing CLI removed. */
+ #endif
+ 
+ #if defined(CONFIG_CMD_RUN)
+-U_BOOT_CMD_COMPLETE(
+-	run,	CONFIG_SYS_MAXARGS,	1,	do_run,
+-	"run commands in an environment variable",
+-	"var [...]\n"
+-	"    - run the commands in the environment variable(s) 'var'",
+-	var_complete
+-);
++/* Storage write protection: environment editing CLI removed. */
+ #endif
+ #endif /* CONFIG_XPL_BUILD */

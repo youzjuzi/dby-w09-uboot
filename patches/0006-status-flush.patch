@@ -1,0 +1,96 @@
+--- /dev/null
++++ b/lib/diagnostic.c
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* DBY-W09 status output; sync only at explicit handoff/wait boundaries. */
++#include <linux/types.h>
++#include <diagnostic.h>
++#include <dm.h>
++#include <dm/uclass.h>
++#include <dm/uclass-internal.h>
++#include <video.h>
++#include <cpu_func.h>
++#include <asm/cache.h>
++#include <asm/global_data.h>
++#include <stdio.h>
++DECLARE_GLOBAL_DATA_PTR;
++static bool flushing;
++void exp_diag_flush(void)
++{
++ struct udevice *dev;
++ if (flushing || !gd || !(gd->flags & GD_FLG_RELOC) || !gd->dm_root) return;
++ flushing = true;
++ uclass_find_first_device(UCLASS_VIDEO, &dev);
++ if (dev && device_active(dev)) {
++  struct video_priv *priv = dev_get_uclass_priv(dev);
++  video_sync(dev, true);
++  if (priv->fb && priv->fb_size)
++   flush_dcache_range((unsigned long)priv->fb & ~(CONFIG_SYS_CACHELINE_SIZE-1),
++     ALIGN((unsigned long)priv->fb + priv->fb_size, CONFIG_SYS_CACHELINE_SIZE));
++ }
++ flushing = false;
++}
++void exp_diag_misc(const char *result, const char *reason, int rc)
++{
++ printf("MISC %s (%.60s; rc=%d)\n", result, reason, rc);
++}
++void exp_diag_sd(int rc, const char *step, int misc_rc)
++{
++ (void)misc_rc;
++ printf("SD RESULT rc=%d step=%.40s\n", rc, step);
++}
+--- /dev/null
++++ b/include/diagnostic.h
+@@ -0,0 +1,8 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++#ifndef DBY_STATUS_H
++#define DBY_STATUS_H
++struct sdhci_host;
++void exp_diag_flush(void);
++void exp_diag_misc(const char *result, const char *reason, int rc);
++void exp_diag_sd(int rc, const char *step, int misc_rc);
++#endif
+--- a/lib/Makefile
++++ b/lib/Makefile
+@@ -181,3 +181,5 @@
+ clean-files     += oid_registry_data.c
+ 
+ subdir-ccflags-$(CONFIG_CC_OPTIMIZE_LIBS_FOR_SPEED) += -O2
++
++obj-y += diagnostic.o
+--- a/lib/hang.c
++++ b/lib/hang.c
+@@ -7,6 +7,7 @@
+  * u-boot.
+  */
+ 
++#include <diagnostic.h>
+ #include <bootstage.h>
+ #include <hang.h>
+ #include <stdio.h>
+@@ -27,6 +28,7 @@
+ 		 CONFIG_IS_ENABLED(SERIAL))
+ 	puts("### ERROR ### Please RESET the board ###\n");
+ #endif
++	exp_diag_flush();
+ 	bootstage_error(BOOTSTAGE_ID_NEED_RESET);
+ 	if (IS_ENABLED(CONFIG_SANDBOX))
+ 		os_exit(1);
+--- a/lib/panic.c
++++ b/lib/panic.c
+@@ -9,6 +9,7 @@
+  * Wirzenius wrote this portably, Torvalds fucked it up :-)
+  */
+ 
++#include <diagnostic.h>
+ #include <hang.h>
+ #if !defined(CONFIG_PANIC_HANG)
+ #include <command.h>
+@@ -21,6 +22,7 @@
+ static void panic_finish(void)
+ {
+ 	putc('\n');
++	exp_diag_flush();
+ #if defined(CONFIG_PANIC_HANG)
+ 	hang();
+ #else

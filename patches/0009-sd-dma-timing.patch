@@ -1,0 +1,108 @@
+--- a/cmd/sd-read.c
++++ b/cmd/sd-read.c
+@@ -9,6 +9,7 @@
+ #include <dm/uclass-internal.h>
+ #include <asm/gpio.h>
+ #include <mmc.h>
++#include <sdhci.h>
+ #include <blk.h>
+ #include <part.h>
+ #include <fat.h>
+@@ -31,6 +32,31 @@
+ static bool invoked;
+ /* Included into the inherited sd-read.c; no general-purpose card commands. */
+ #define DBY_LINUX_ARGS "console=tty0 clk_ignore_unused pd_ignore_unused rdinit=/init panic=10 loglevel=7"
++struct dby_sd_stats {
++	u64 bytes, read_ms, sha_ms, init_ms;
++};
++static inline bool dby_dma64_supported(u32 caps)
++{
++	const u32 required = SDHCI_CAN_DO_ADMA2 | SDHCI_CAN_64BIT;
++
++	return (caps & required) == required;
++}
++static int dby_format_bootargs(char *buf, size_t capacity,
++			  const struct dby_sd_stats *stats)
++{
++	const char *dma = CONFIG_IS_ENABLED(MMC_SDHCI_ADMA) ? "adma64" : "pio";
++	int n;
++
++	n = snprintf(buf, capacity, DBY_LINUX_ARGS
++		     " dby.sd_bytes=%llu dby.sd_read_ms=%llu dby.sd_sha_ms=%llu"
++		     " dby.sd_init_ms=%llu dby.sd_dma=%s",
++		     (unsigned long long)stats->bytes,
++		     (unsigned long long)stats->read_ms,
++		     (unsigned long long)stats->sha_ms,
++		     (unsigned long long)stats->init_ms, dma);
++	return n < 0 || (size_t)n >= capacity ? -E2BIG : 0;
++}
++static u64 dby_sd_init_ms;
+ static int hex_digit(char c)
+ {
+  if(c>='0'&&c<='9')return c-'0';
+@@ -60,7 +86,9 @@
+  const char *names[3]={"/UBOOT/Image","/UBOOT/dby-w09.dtb","/UBOOT/initrd.img"};
+  ulong addresses[3]={dby_kernel_buffer,dby_fdt_buffer,dby_initrd_buffer};
+  const ulong caps[3]={SZ_128M,SZ_2M-0x10000,SZ_128M};
+- char manifest[256], command[128]; u8 expected[3][32],digest[32];
++ char manifest[256], command[128], bootargs[512];
++ struct dby_sd_stats stats = { .init_ms = dby_sd_init_ms };
++ ulong started; u8 expected[3][32],digest[32];
+  loff_t size,got,sizes[3]; ulong relocated,image_size; int ret,i;
+  ret=fat_size("/UBOOT/MANIFEST",&size);
+  if(!ret && (size<=0||size>=sizeof(manifest)))ret=-EFBIG;
+@@ -72,10 +100,15 @@
+   ret=fat_size(names[i],&size);
+   if(!ret && (!addresses[i] || (addresses[i]&(SZ_2M-1)) || size<=0 || size>caps[i]))ret=-EFBIG;
+   if(ret)return ret;
++  started=get_timer(0);
+   ret=fat_read_file(names[i],(void *)addresses[i],0,size,&got);
++  stats.read_ms+=get_timer(started);
+   if(!ret && got!=size)ret=-EIO;
+   if(ret)return ret;
++  stats.bytes+=size;
++  started=get_timer(0);
+   sha256_csum_wd((void *)addresses[i],size,digest,65536);
++  stats.sha_ms+=get_timer(started);
+   ret=memcmp(digest,expected[i],32)?-EIO:0;
+   if(ret)return ret;
+   sizes[i]=size;
+@@ -87,7 +120,9 @@
+  if(ret)return ret;
+  fat_close();
+  /* No env/script/bootargs are read from SD. Both buffers are aligned, padded slots. */
+- ret=env_set("bootargs",DBY_LINUX_ARGS);
++ ret=dby_format_bootargs(bootargs,sizeof(bootargs),&stats);
++ if(ret)return ret;
++ ret=env_set("bootargs",bootargs);
+  ret|=env_set("initrd_high","ffffffffffffffff");
+  ret|=env_set("fdt_high","ffffffffffffffff");
+  if(ret)return -EINVAL;
+@@ -124,6 +159,7 @@
+ 	struct fs_dirent *entry;
+ 	int ret = -EPERM, misc_ret = -EPERM, p, first = 0, level, i;
+ 	const char *step = "already invoked";
++	ulong init_started;
+ 	console_assign(stdout, "vidconsole"); console_assign(stderr, "vidconsole");
+ 	/* Existing ANSI renderer: bold white (index 15), black (index 0). */
+ 	puts("\x1b[0;1;37;40m");
+@@ -147,9 +183,18 @@
+ 	ret = uclass_get_device(UCLASS_MMC, 0, &host);
+ 	if (ret) goto done;
+ 	mmc = mmc_get_mmc_dev(host);
+-
++#if CONFIG_IS_ENABLED(MMC_SDHCI_ADMA)
++	step = "SD 64-bit DMA unsupported";
++	if (!mmc || !mmc->priv ||
++	    !dby_dma64_supported(sdhci_readl(mmc->priv, SDHCI_CAPABILITIES))) {
++		ret = -EOPNOTSUPP;
++		goto done;
++	}
++#endif
+ 	step = "card identification";
++	init_started = get_timer(0);
+ 	ret = mmc ? mmc_init(mmc) : -ENODEV;
++	dby_sd_init_ms = get_timer(init_started);
+ 	if (ret) goto done;
+ 	ret = IS_SD(mmc) ? 0 : -EPERM;
+ 

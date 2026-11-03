@@ -1,0 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Framebuffer region transcribed from the owner runtime FDT; hardware facts, not vendor source code. */
+/* Framebuffer physical address as handed over by the stock bootloader (HarmonyOS 4.2.0.213 runtime FDT). */
+&framebuffer { reg = <0x0 0x9c000000 0 0xfa0000>; };

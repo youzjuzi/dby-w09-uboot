@@ -1,0 +1,383 @@
+--- a/drivers/block/blk-uclass.c
++++ b/drivers/block/blk-uclass.c
+@@ -7,6 +7,7 @@
+ #define LOG_CATEGORY UCLASS_BLK
+ 
+ #include <blk.h>
++#include <misc-clear.h>
+ #include <dm.h>
+ #include <log.h>
+ #include <malloc.h>
+@@ -468,50 +469,23 @@
+ }
+ 
+ long blk_write(struct udevice *dev, lbaint_t start, lbaint_t blkcnt,
+-	       const void *buf)
+-{
+-	struct blk_desc *desc = dev_get_uclass_plat(dev);
+-	const struct blk_ops *ops = blk_get_ops(dev);
+-	long blks_written;
+-
++               const void *buf)
++{
++	struct blk_ops *ops = blk_get_ops(dev);
++	int ret = misc_block_gate(dev, start, blkcnt, buf);
++
++	if (ret)
++		return ret;
+ 	if (!ops->write)
+ 		return -ENOSYS;
+-
+-	blkcache_invalidate(desc->uclass_id, desc->devnum);
+-
+-	if (IS_ENABLED(CONFIG_BOUNCE_BUFFER) && desc->bb) {
+-		struct blk_bounce_buffer bbstate = { .dev = dev };
+-		int ret;
+-
+-		ret = bounce_buffer_start_extalign(&bbstate.state, (void *)buf,
+-						   blkcnt * desc->blksz,
+-						   GEN_BB_READ, desc->blksz,
+-						   blk_buffer_aligned);
+-		if (ret)
+-			return ret;
+-
+-		blks_written = ops->write(dev, start, blkcnt,
+-					  bbstate.state.bounce_buffer);
+-
+-		bounce_buffer_stop(&bbstate.state);
+-	} else {
+-		blks_written = ops->write(dev, start, blkcnt, buf);
+-	}
+-
+-	return blks_written;
++	/* Only the aligned private buffer admitted by the gate; no cache fill. */
++	return ops->write(dev, start, blkcnt, buf);
+ }
+ 
+ long blk_erase(struct udevice *dev, lbaint_t start, lbaint_t blkcnt)
+ {
+-	struct blk_desc *desc = dev_get_uclass_plat(dev);
+-	const struct blk_ops *ops = blk_get_ops(dev);
+-
+-	if (!ops->erase)
+-		return -ENOSYS;
+-
+-	blkcache_invalidate(desc->uclass_id, desc->devnum);
+-
+-	return ops->erase(dev, start, blkcnt);
++	/* Storage write protection: no block mutation may reach an operation callback. */
++	return -EROFS;
+ }
+ 
+ ulong blk_dread(struct blk_desc *desc, lbaint_t start, lbaint_t blkcnt,
+--- a/drivers/scsi/scsi.c
++++ b/drivers/scsi/scsi.c
+@@ -17,6 +17,8 @@
+ #include <part.h>
+ #include <pci.h>
+ #include <scsi.h>
++#include <misc-clear.h>
++#include <misc-partition-private.h>
+ #include <dm/device-internal.h>
+ #include <dm/uclass-internal.h>
+ 
+@@ -236,100 +238,44 @@
+  * scsi_write
+  */
+ 
++static void misc_cdb(struct scsi_cmd *c, unsigned char op)
++{
++	c->cmd[0] = op;
++	c->cmd[2] = (MISC_START >> 24) & 0xff;
++	c->cmd[3] = (MISC_START >> 16) & 0xff;
++	c->cmd[4] = (MISC_START >> 8) & 0xff;
++	c->cmd[5] = MISC_START & 0xff;
++	c->cmd[8] = 1;
++	c->cmdlen = 10;
++	c->target = 0;
++	c->lun = MISC_LUN;
++}
+ static ulong scsi_write(struct udevice *dev, lbaint_t blknr, lbaint_t blkcnt,
+-			const void *buffer)
+-{
+-	struct blk_desc *block_dev = dev_get_uclass_plat(dev);
+-	struct udevice *bdev = dev->parent;
+-	struct scsi_plat *uc_plat = dev_get_uclass_plat(bdev);
+-	lbaint_t start, blks, max_blks, blocks;
+-	uintptr_t buf_addr;
+-	struct scsi_cmd *pccb = (struct scsi_cmd *)&tempccb;
+-
+-	/* Setup device */
+-	pccb->target = block_dev->target;
+-	pccb->lun = block_dev->lun;
+-	buf_addr = (unsigned long)buffer;
+-	start = blknr;
+-	blks = blkcnt;
+-	if (uc_plat->max_bytes_per_req)
+-		max_blks = uc_plat->max_bytes_per_req / block_dev->blksz;
+-	else
+-		max_blks = SCSI_MAX_BLK;
+-
+-	debug("\n%s: dev %d startblk " LBAF ", blccnt " LBAF " buffer %lx\n",
+-	      __func__, block_dev->devnum, start, blks, (unsigned long)buffer);
+-	do {
+-		pccb->pdata = (unsigned char *)buf_addr;
+-		pccb->dma_dir = DMA_TO_DEVICE;
+-		if (blks > max_blks) {
+-			pccb->datalen = block_dev->blksz * max_blks;
+-			blocks = max_blks;
+-			scsi_setup_write_ext(pccb, start, blocks);
+-			start += max_blks;
+-		} else {
+-			pccb->datalen = block_dev->blksz * blks;
+-			blocks = blks;
+-			scsi_setup_write_ext(pccb, start, blocks);
+-			start += blks;
+-		}
+-		debug("%s: startblk " LBAF ", blccnt " LBAF " buffer %lx\n",
+-		      __func__, start, blocks, buf_addr);
+-		if (scsi_exec(bdev, pccb)) {
+-			scsi_print_error(pccb);
+-			blkcnt -= blks;
+-			break;
+-		}
+-		blks -= blocks;
+-		buf_addr += pccb->datalen;
+-	} while (blks != 0);
+-
+-	debug("%s: end startblk " LBAF ", blccnt " LBAF " buffer %lX\n",
+-	      __func__, start, blocks, buf_addr);
+-	return blkcnt;
+-}
+-
+-/*******************************************************************************
+- * scsi_erase
+- */
++                        const void *buffer)
++{
++	struct scsi_cmd c = {0};
++	int ret = misc_scsi_gate(dev, blknr, blkcnt, buffer);
++
++	if (ret) return (ulong)ret;
++	misc_cdb(&c, 0x2a);
++	c.cmd[1] = 0x08; /* FUA; no DPO/protection/other bits. */
++	c.pdata = (void *)buffer;
++	c.datalen = MISC_BLKSZ;
++	c.dma_dir = DMA_TO_DEVICE;
++	ret = scsi_exec(dev->parent, &c); /* Exactly one submission; no retry. */
++	return ret ? (ulong)ret : 1;
++}
++int misc_scsi_sync(struct udevice *dev)
++{
++	struct scsi_cmd c = {0};
++
++	misc_cdb(&c, 0x35); /* IMMED=0, exactly the same LBA/count. */
++	c.dma_dir = DMA_NONE;
++	return scsi_exec(dev->parent, &c); /* Transport requires SYNC_ARMED. */
++}
+ static ulong scsi_erase(struct udevice *dev, lbaint_t blknr, lbaint_t blkcnt)
+ {
+-	struct blk_desc *block_dev = dev_get_uclass_plat(dev);
+-	struct udevice *bdev = dev->parent;
+-	struct scsi_plat *uc_plat = dev_get_uclass_plat(bdev);
+-	lbaint_t start, blks, max_blks, blocks;
+-	struct scsi_cmd *pccb = (struct scsi_cmd *)&tempccb;
+-
+-	/* Setup device */
+-	pccb->target = block_dev->target;
+-	pccb->lun = block_dev->lun;
+-	start = blknr;
+-	blks = blkcnt;
+-	if (uc_plat->max_bytes_per_req)
+-		max_blks = uc_plat->max_bytes_per_req / block_dev->blksz;
+-	else
+-		max_blks = SCSI_MAX_BLK;
+-
+-	debug("\n%s: dev %d startblk " LBAF ", blccnt " LBAF "\n",
+-	      __func__, block_dev->devnum, start, blks);
+-	do {
+-		if (blks > max_blks) {
+-			blocks = max_blks;
+-			scsi_setup_erase_ext(pccb, start, max_blks);
+-			start += max_blks;
+-		} else {
+-			blocks = blks;
+-			scsi_setup_erase_ext(pccb, start, blks);
+-			start += blks;
+-		}
+-		if (scsi_exec(bdev, pccb)) {
+-			scsi_print_error(pccb);
+-			blkcnt -= blks;
+-			break;
+-		}
+-		blks -= blocks;
+-	} while (blks != 0);
+-	return blkcnt;
++	return (ulong)-EROFS;
+ }
+ 
+ #if IS_ENABLED(CONFIG_BOUNCE_BUFFER)
+@@ -618,24 +564,11 @@
+ 
+ int scsi_scan_dev(struct udevice *dev, bool verbose)
+ {
+-	struct scsi_plat *uc_plat; /* scsi controller plat */
+-	int ret;
+-	int i;
+-	int lun;
+-
+-	/* probe SCSI controller driver */
+-	ret = device_probe(dev);
++	int ret = device_probe(dev);
+ 	if (ret)
+ 		return ret;
+-
+-	/* Get controller plat */
+-	uc_plat = dev_get_uclass_plat(dev);
+-
+-	for (i = 0; i < uc_plat->max_id; i++)
+-		for (lun = 0; lun < uc_plat->max_lun; lun++)
+-			do_scsi_scan_one(dev, i, lun, verbose);
+-
+-	return 0;
++	/* Storage write protection: exactly target 0 / LUN 0, propagate failure, no fallback. */
++	return do_scsi_scan_one(dev, 0, 0, verbose);
+ }
+ 
+ int scsi_scan(bool verbose)
+--- a/drivers/ufs/ufs-uclass.c
++++ b/drivers/ufs/ufs-uclass.c
+@@ -8,6 +8,7 @@
+  * Copyright (C) 2019 Texas Instruments Incorporated - https://www.ti.com
+  */
+ 
++#include <misc-clear.h>
+ #include <bouncebuf.h>
+ #include <charset.h>
+ #include <clk.h>
+@@ -254,6 +255,9 @@
+ 	int ret;
+ 	int retries = UFS_UIC_COMMAND_RETRIES;
+ 
++	/* No static/persistent DME attributes. */
++	if (attr_set || (peer && UIC_GET_ATTR_ID(attr_sel) != TX_LCC_ENABLE))
++		return -EROFS;
+ 	uic_cmd.command = peer ?
+ 		UIC_CMD_DME_PEER_SET : UIC_CMD_DME_SET;
+ 	uic_cmd.argument1 = attr_sel;
+@@ -1030,6 +1034,17 @@
+ 	int err;
+ 	int resp;
+ 
++	/* Storage write protection: deny all mutating Query requests except transient init. */
++	if (cmd_type == DEV_CMD_TYPE_QUERY) {
++		struct utp_upiu_query *q = &hba->dev_cmd.query.request.upiu_req;
++		if (q->opcode != UPIU_QUERY_OPCODE_READ_DESC &&
++		    q->opcode != UPIU_QUERY_OPCODE_READ_ATTR &&
++		    q->opcode != UPIU_QUERY_OPCODE_READ_FLAG &&
++		    !(q->opcode == UPIU_QUERY_OPCODE_SET_FLAG &&
++		      q->idn == QUERY_FLAG_IDN_FDEVICEINIT &&
++		      !q->index && !q->selector))
++			return -EROFS;
++	}
+ 	err = ufshcd_comp_devman_upiu(hba, cmd_type);
+ 	if (err)
+ 		return err;
+@@ -1664,15 +1679,35 @@
+ 	int ocs, result = 0;
+ 	u8 scsi_status;
+ 
++	/* One-shot recovery command clearing: read allowlist plus one-shot, single-block write/sync gates. */
++	if (pccb->lun != 0 || pccb->target != 0)
++		return -EROFS;
++	switch (pccb->cmd[0]) {
++	case 0x2a: case 0x35:
++		result = misc_transport_gate(scsi_dev, pccb);
++		if (result) return result;
++		break;
++	case 0x00: case 0x03: case 0x12: case 0x25: case 0x28: case 0x88:
++		break;
++	case 0x9e:
++		if ((pccb->cmd[1] & 0x1f) != 0x10)
++			return -EROFS;
++		break;
++	default:
++		return -EROFS;
++	}
+ 	ufshcd_prepare_req_desc_hdr(hba, &upiu_flags, pccb->dma_dir);
+ 	ufshcd_prepare_utp_scsi_cmd_upiu(hba, pccb, upiu_flags);
+ 	prepare_prdt_table(hba, pccb);
+ 
+-	ufshcd_cache_flush(pccb->pdata, pccb->datalen);
+-
+-	ufshcd_send_command(hba, TASK_TAG);
+-
+-	ufshcd_cache_invalidate(pccb->pdata, pccb->datalen);
++	if (pccb->datalen)
++		ufshcd_cache_flush(pccb->pdata, pccb->datalen);
++
++	result = ufshcd_send_command(hba, TASK_TAG);
++	if (result) return result; /* Never mistake a timeout for completion. */
++
++	if (pccb->datalen)
++		ufshcd_cache_invalidate(pccb->pdata, pccb->datalen);
+ 
+ 	ocs = ufshcd_get_tr_ocs(hba);
+ 	switch (ocs) {
+@@ -1895,8 +1930,10 @@
+ 		dev_err(hba->dev,
+ 			"invalid ref_clk setting = %ld\n", clk_get_rate(ref_clk));
+ 
+-	if (host_ref_clk_freq == REF_CLK_FREQ_INVAL)
++	if (host_ref_clk_freq == REF_CLK_FREQ_INVAL) {
++		err = -EINVAL;
+ 		goto out;
++	}
+ 
+ 	err = ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_READ_ATTR,
+ 				      QUERY_ATTR_IDN_REF_CLK_FREQ, 0, 0, &dev_ref_clk_freq);
+@@ -1909,17 +1946,8 @@
+ 	if (dev_ref_clk_freq == host_ref_clk_freq)
+ 		goto out; /* nothing to update */
+ 
+-	err = ufshcd_query_attr_retry(hba, UPIU_QUERY_OPCODE_WRITE_ATTR,
+-				      QUERY_ATTR_IDN_REF_CLK_FREQ, 0, 0, &host_ref_clk_freq);
+-
+-	if (err) {
+-		dev_err(hba->dev, "bRefClkFreq setting to %lu Hz failed\n",
+-			ufs_ref_clk_freqs[host_ref_clk_freq].freq_hz);
+-		goto out;
+-	}
+-
+-	dev_dbg(hba->dev, "bRefClkFreq setting to %lu Hz succeeded\n",
+-		ufs_ref_clk_freqs[host_ref_clk_freq].freq_hz);
++	/* Storage write protection: never change persistent bRefClkFreq. */
++	err = -EROFS;
+ 
+ out:
+ 	return err;
+@@ -2104,10 +2132,12 @@
+ 		dev_err(hba->dev,
+ 			"%s reading fDeviceInit flag failed with error %d\n",
+ 			__func__, err);
+-	else if (flag_res)
++	else if (flag_res) {
++		err = -ETIMEDOUT;
+ 		dev_err(hba->dev,
+ 			"%s fDeviceInit was not cleared by the device\n",
+ 			__func__);
++	}
+ 
+ out:
+ 	return err;
+@@ -2152,7 +2182,9 @@
+ 		return ret;
+ 	}
+ 
+-	ufshcd_set_dev_ref_clk(hba);
++	ret = ufshcd_set_dev_ref_clk(hba);
++	if (ret)
++		return ret;
+ 
+ 	if (ufshcd_get_max_pwr_mode(hba)) {
+ 		dev_err(hba->dev,

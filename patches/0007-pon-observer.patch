@@ -1,0 +1,40 @@
+--- a/arch/arm/dts/sd-read.dts
++++ b/arch/arm/dts/sd-read.dts
+@@ -130,3 +130,37 @@
+ #include "ufs-private.dtsi"
+ 
+ #include "sd-private.dtsi"
++
++/ {
++	spmi_bus: spmi@c440000 {
++		compatible = "qcom,spmi-pmic-arb";
++		reg = <0 0x0c440000 0 0x1100>,
++		      <0 0x0c600000 0 0x2000000>,
++		      <0 0x0e600000 0 0x100000>,
++		      <0 0x0e700000 0 0xa0000>,
++		      <0 0x0c40a000 0 0x26000>;
++		reg-names = "core", "chnls", "obsrvr", "intr", "cnfg";
++		qcom,ee = <0>;
++		qcom,channel = <0>;
++		#address-cells = <2>;
++		#size-cells = <0>;
++		pm8150_0: pmic@0 {
++			compatible = "qcom,pm8150", "qcom,spmi-pmic";
++			reg = <0 0>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			pon@800 {
++				compatible = "qcom,pm8998-pon";
++				reg = <0x800>;
++				pwrkey {
++					compatible = "qcom,pm8941-pwrkey";
++					linux,code = <116>;
++				};
++				resin {
++					compatible = "qcom,pm8941-resin";
++					linux,code = <114>;
++				};
++			};
++		};
++	};
++};

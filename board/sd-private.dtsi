@@ -1,0 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* SD-related register regions transcribed from the owner runtime FDT and hardware address map; hardware facts, not vendor source code. */
+&tlmm { reg = <0 0x0f100000 0 0x300000>,
+			      <0 0x0f500000 0 0x300000>,
+			      <0 0x0f900000 0 0x300000>; };
+&sdhc_2 { reg = <0 0x08804000 0 0x1000>; };
+&apps_rsc { reg = <0x0 0x18200000 0x0 0x10000>,
+				<0x0 0x18210000 0x0 0x10000>,
+				<0x0 0x18220000 0x0 0x10000>; };
+&cmd_db { reg = <0x0 0x80860000 0x0 0x20000>; };

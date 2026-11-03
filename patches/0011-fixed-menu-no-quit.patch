@@ -1,0 +1,95 @@
+--- a/cmd/bootmenu.c
++++ b/cmd/bootmenu.c
+@@ -16,6 +16,12 @@
+ #include <malloc.h>
+ #include <linux/delay.h>
+ #include <linux/string.h>
++
++/* Only the board-owned menu opts into a non-exitable policy. */
++bool __weak dby_bootmenu_fixed(void)
++{
++	return false;
++}
+ 
+ /* maximum bootmenu entries */
+ #define MAX_COUNT	99
+@@ -116,7 +122,9 @@
+ 			return NULL;
+ 		case BKEY_SHORTCUT:
+ 			/* invalid shortcut, regenerate menu */
+-			if (cch->shortcut_key >= menu->count - 1)
++			if (dby_bootmenu_fixed() ?
++			    (cch->shortcut_key < 0 || cch->shortcut_key >= menu->count) :
++			    cch->shortcut_key >= menu->count - 1)
+ 				return NULL;
+ 			/* shortcut_key value for Exit is is -1 */
+ 			menu->active = cch->shortcut_key < 0 ? menu->count - 1 :
+@@ -128,6 +136,8 @@
+ 				iter = iter->next;
+ 			return iter->key;
+ 		case BKEY_QUIT:
++			if (dby_bootmenu_fixed())
++				return NULL;
+ 			/* Quit by choosing the last entry */
+ 			iter = menu->first;
+ 			while (iter->next)
+@@ -416,7 +426,7 @@
+ #endif
+ 
+ 	/* Add Exit entry at the end */
+-	if (i <= MAX_COUNT - 1) {
++	if (!dby_bootmenu_fixed() && i <= MAX_COUNT - 1) {
+ 		entry = malloc(sizeof(struct bootmenu_entry));
+ 		if (!entry)
+ 			goto cleanup;
+@@ -455,6 +465,8 @@
+ 		++i;
+ 	}
+ 
++	if (!i)
++		goto cleanup;
+ 	menu->count = i;
+ 
+ 	if ((menu->active >= menu->count)||(menu->active < 0)) { //ensure active menuitem is inside menu
+@@ -491,7 +503,8 @@
+ 	printf(ANSI_CURSOR_POSITION, menu->count + 5, 1);
+ 	puts(ANSI_CLEAR_LINE);
+ 	printf(ANSI_CURSOR_POSITION, menu->count + 6, 3);
+-	puts("Press UP/DOWN to move, ENTER to select, ESC to quit");
++	puts(dby_bootmenu_fixed() ? "Press UP/DOWN to move, ENTER to select" :
++	     "Press UP/DOWN to move, ENTER to select, ESC to quit");
+ 	puts(ANSI_CLEAR_LINE_TO_END);
+ 	printf(ANSI_CURSOR_POSITION, menu->count + 7, 1);
+ 	puts(ANSI_CLEAR_LINE);
+@@ -589,7 +602,7 @@
+ 		command = strdup(iter->command);
+ 
+ 		/* last entry exits bootmenu */
+-		if (iter->num == iter->menu->count - 1) {
++		if (!dby_bootmenu_fixed() && iter->num == iter->menu->count - 1) {
+ 			ret = BOOTMENU_RET_QUIT;
+ 			goto cleanup;
+ 		}
+@@ -658,7 +671,7 @@
+ 			continue;
+ 
+ 		if (IS_ENABLED(CONFIG_BOOTMENU_DISABLE_UBOOT_CONSOLE)) {
+-			if (ret == BOOTMENU_RET_QUIT) {
++			if (!dby_bootmenu_fixed() && ret == BOOTMENU_RET_QUIT) {
+ 				/* default boot process */
+ 				if (IS_ENABLED(CONFIG_CMD_BOOTEFI_BOOTMGR))
+ 					run_command("bootefi bootmgr", 0);
+--- a/cmd/dby-boot.c
++++ b/cmd/dby-boot.c
+@@ -14,6 +14,11 @@
+ static int misc_status = -EPERM;
+ enum dby_action { DBY_UBUNTU, DBY_REBOOT, DBY_OFF };
+ static enum dby_action selected = DBY_UBUNTU;
++
++bool dby_bootmenu_fixed(void)
++{
++	return entered;
++}
+ 
+ int dby_boot_misc_status(void)
+ {

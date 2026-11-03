@@ -1,0 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* UFS register regions transcribed from the owner runtime FDT and hardware address map; hardware facts, not vendor source code. */
+&gcc { reg = <0 0x100000 0 0x1f0000>; };
+&apps_smmu { reg = <0 0x15000000 0 0x100000>; };
+&ufs_mem_hc { reg = <0 0x1d84000 0 0x3000>; };
+&ufs_mem_phy { reg = <0 0x1d87000 0 0x1000>; };

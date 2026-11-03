@@ -1,0 +1,186 @@
+--- a/drivers/mmc/mmc.c
++++ b/drivers/mmc/mmc.c
+@@ -3033,6 +3033,10 @@
+ 		goto retry;
+ 	}
+ 
++	/* SD-only bring-up: this candidate supports SD only; no MMC fallback. */
++	if (err)
++		return err;
++
+ 	/* If the command timed out, we check for an MMC card */
+ 	if (err == -ETIMEDOUT) {
+ 		err = mmc_send_op_cond(mmc);
+--- a/drivers/mmc/mmc-uclass.c
++++ b/drivers/mmc/mmc-uclass.c
+@@ -40,6 +40,15 @@
+ 	struct dm_mmc_ops *ops = mmc_get_ops(dev);
+ 	int ret;
+ 
++	/* SD-only bring-up: SD protocol initialization/status/read only. */
++	if (data && (data->flags & MMC_DATA_WRITE)) return -EROFS;
++	switch (cmd->cmdidx) {
++	case 0: case 2: case 3: case 6: case 7: case 8: case 9:
++	case 12: case 13: case 16: case 17: case 18: case 41: case 51: case 55:
++		break;
++	default:
++		return -EROFS;
++	}
+ 	mmmc_trace_before_send(mmc, cmd);
+ 	if (ops->send_cmd)
+ 		ret = ops->send_cmd(dev, cmd, data);
+--- a/common/board_r.c
++++ b/common/board_r.c
+@@ -411,7 +411,7 @@
+ static int initr_mmc(void)
+ {
+ 	puts("MMC:   ");
+-	mmc_initialize(gd->bd);
++	/* SD-only bring-up: dedicated command probes after explicit power setup. */
+ 	return 0;
+ }
+ #endif
+--- /dev/null
++++ b/arch/arm/dts/sd-read.dts
+@@ -0,0 +1,132 @@
++// SPDX-License-Identifier: GPL-2.0+
++/dts-v1/;
++#include <dt-bindings/clock/qcom,gcc-sm8250.h>
++
++/ {
++	model = "DBY-W09 U-Boot SD read experiment";
++	compatible = "huawei,dby-w09-misc-read-only", "qcom,sm8250";
++	#address-cells = <2>;
++	#size-cells = <2>;
++
++	/* Firmware call only; no memory-mapped peripheral is described. */
++	psci {
++		compatible = "arm,psci-1.0";
++		method = "smc";
++		bootph-all;
++	};
++	framebuffer: framebuffer {
++		compatible = "simple-framebuffer";
++		width = <1600>;
++		height = <2560>;
++		stride = <6400>;
++		format = "a8r8g8b8";
++		rot = <0>;
++		bootph-all;
++	};
++	xo: xo-clock {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <19200000>;
++	};
++	gcc: clock-controller {
++		compatible = "qcom,gcc-sm8250";
++		#clock-cells = <1>;
++		#reset-cells = <1>;
++		#power-domain-cells = <1>;
++	};
++	apps_smmu: iommu {
++		compatible = "qcom,sm8250-smmu-500", "qcom,smmu-500", "arm,mmu-500";
++		#iommu-cells = <2>;
++	};
++	ufs_mem_phy: phy {
++		compatible = "qcom,sm8250-qmp-ufs-phy";
++		clocks = <&xo>, <&gcc GCC_UFS_PHY_PHY_AUX_CLK>, <&gcc GCC_UFS_1X_CLKREF_EN>;
++		clock-names = "ref", "ref_aux", "qref";
++		resets = <&ufs_mem_hc 0>;
++		reset-names = "ufsphy";
++		power-domains = <&gcc UFS_PHY_GDSC>;
++		#phy-cells = <0>;
++	};
++	ufs_mem_hc: ufs {
++		compatible = "qcom,sm8250-ufshc", "qcom,ufshc", "jedec,ufs-2.0";
++		phys = <&ufs_mem_phy>;
++		phy-names = "ufsphy";
++		lanes-per-direction = <2>;
++		/* Runtime UFS max UniPro clock; legacy parser supported by U-Boot. */
++		freq-table-hz = <37500000 300000000 0 0 0 0 37500000 300000000 0 0 0 0 0 0 0 0>;
++		#reset-cells = <1>;
++		resets = <&gcc GCC_UFS_PHY_BCR>;
++		reset-names = "rst";
++		power-domains = <&gcc UFS_PHY_GDSC>;
++		iommus = <&apps_smmu 0x0e0 0>, <&apps_smmu 0x4e0 0>;
++		clock-names = "core_clk", "bus_aggr_clk", "iface_clk", "core_clk_unipro",
++			"ref_clk", "tx_lane0_sync_clk", "rx_lane0_sync_clk", "rx_lane1_sync_clk";
++		clocks = <&gcc GCC_UFS_PHY_AXI_CLK>, <&gcc GCC_AGGRE_UFS_PHY_AXI_CLK>,
++			<&gcc GCC_UFS_PHY_AHB_CLK>, <&gcc GCC_UFS_PHY_UNIPRO_CORE_CLK>,
++			<&xo>, <&gcc GCC_UFS_PHY_TX_SYMBOL_0_CLK>,
++			<&gcc GCC_UFS_PHY_RX_SYMBOL_0_CLK>, <&gcc GCC_UFS_PHY_RX_SYMBOL_1_CLK>;
++	};
++
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++		cmd_db: command-db { compatible = "qcom,cmd-db"; no-map; };
++	};
++	apps_rsc: rsc {
++		compatible = "qcom,rpmh-rsc";
++		reg-names = "drv-0", "drv-1", "drv-2";
++		qcom,tcs-offset = <0xd00>;
++		qcom,drv-id = <2>;
++		qcom,tcs-config = <2 2>, <0 3>, <1 3>, <3 1>;
++		regulators {
++			compatible = "qcom,pm8150l-rpmh-regulators";
++			qcom,pmic-id = "c";
++			vdd_sd: ldo9 {
++				regulator-name = "sd-vdd";
++				regulator-initial-mode = <3>; /* RB5 HPM */
++				regulator-min-microvolt = <2704000>;
++				regulator-max-microvolt = <2960000>;
++			};
++			vdd_io_sd: ldo6 {
++				regulator-name = "sd-vdd-io";
++				regulator-initial-mode = <3>; /* RB5 HPM */
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <2960000>;
++			};
++		};
++	};
++	tlmm: pinctrl {
++		compatible = "qcom,sm8250-pinctrl";
++		reg-names = "west", "south", "north";
++		gpio-controller;
++		#gpio-cells = <2>;
++		sdc2_default: sdc2-default {
++			clk-pins { pins = "sdc2_clk"; bias-disable; drive-strength = <16>; };
++			cmd-pins { pins = "sdc2_cmd"; bias-pull-up; drive-strength = <16>; };
++			data-pins { pins = "sdc2_data"; bias-pull-up; drive-strength = <16>; };
++		};
++	};
++	sdhc_2: mmc {
++		compatible = "qcom,sm8250-sdhci", "qcom,sdhci-msm-v5";
++		clocks = <&gcc GCC_SDCC2_AHB_CLK>, <&gcc GCC_SDCC2_APPS_CLK>, <&xo>;
++		clock-names = "iface", "core", "xo";
++		resets = <&gcc GCC_SDCC2_BCR>;
++		iommus = <&apps_smmu 0x4a0 0>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&sdc2_default>;
++		vmmc-supply = <&vdd_sd>;
++		vqmmc-supply = <&vdd_io_sd>;
++		bus-width = <4>;
++		broken-cd;
++		no-1-8-v;
++		no-sdio;
++		no-mmc;
++	};
++
++};
++#include "framebuffer-private.dtsi"
++
++#include "ufs-private.dtsi"
++
++#include "sd-private.dtsi"
+--- a/arch/arm/dts/Makefile
++++ b/arch/arm/dts/Makefile
+@@ -1177,3 +1177,6 @@
+ 
+ DTC_FLAGS_imx8mp-dhcom-som-overlay-rev100 += -Wno-avoid_default_addr_size -Wno-reg_format
+ DTC_FLAGS_imx8mp-dhcom-pdk3-overlay-rev100 += -Wno-avoid_default_addr_size -Wno-reg_format
++
++# DBY-W09 internal control tree, never passed to Linux.
++dtb-$(CONFIG_ARCH_SNAPDRAGON) += sd-read.dtb

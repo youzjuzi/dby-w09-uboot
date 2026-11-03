@@ -1,0 +1,264 @@
+--- /dev/null
++++ b/drivers/button/button-dby-pmic-gpio.c
+@@ -0,0 +1,78 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* DBY-W09 volume-up: observe the inherited PMIC GPIO configuration only. */
++#include <button.h>
++#include <dm.h>
++#include <power/pmic.h>
++#include <linux/errno.h>
++#include <dt-bindings/input/linux-event-codes.h>
++
++struct dby_pmic_gpio_priv {
++	u32 base;
++};
++
++static int dby_pmic_gpio_bind(struct udevice *dev)
++{
++	struct button_uc_plat *plat = dev_get_uclass_plat(dev);
++
++	plat->label = dev_read_string(dev, "label");
++	return plat->label ? 0 : -EINVAL;
++}
++
++static int dby_pmic_gpio_probe(struct udevice *dev)
++{
++	static const unsigned int offsets[] = { 4, 5, 0x40, 0x41, 0x42, 0x46 };
++	static const int expected[] = { 0x10, 0x11, 0, 0, 0, 0x80 };
++	struct dby_pmic_gpio_priv *priv = dev_get_priv(dev);
++	unsigned int i;
++	int value;
++
++	if (dev_read_addr(dev) != 0xc500 ||
++	    dev_read_u32_default(dev, "linux,code", 0) != KEY_VOLUMEUP)
++		return -EINVAL;
++	priv->base = 0xc500;
++	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
++		value = pmic_reg_read(dev->parent, priv->base + offsets[i]);
++		if (value < 0)
++			return value;
++		if (value != expected[i])
++			return -ENXIO;
++	}
++	return 0;
++}
++
++static enum button_state_t dby_pmic_gpio_get_state(struct udevice *dev)
++{
++	struct dby_pmic_gpio_priv *priv = dev_get_priv(dev);
++	int value = pmic_reg_read(dev->parent, priv->base + 8);
++
++	if (value < 0)
++		return value;
++	if (!(value & 0x80))
++		return -EIO;
++	return value & 1 ? BUTTON_OFF : BUTTON_ON;
++}
++
++static int dby_pmic_gpio_get_code(struct udevice *dev)
++{
++	return KEY_UP;
++}
++
++static const struct button_ops dby_pmic_gpio_ops = {
++	.get_state = dby_pmic_gpio_get_state,
++	.get_code = dby_pmic_gpio_get_code,
++};
++
++static const struct udevice_id dby_pmic_gpio_ids[] = {
++	{ .compatible = "huawei,dby-w09-pmic-gpio-button" },
++	{ }
++};
++
++U_BOOT_DRIVER(dby_pmic_gpio_button) = {
++	.name = "dby_pmic_gpio_button",
++	.id = UCLASS_BUTTON,
++	.of_match = dby_pmic_gpio_ids,
++	.bind = dby_pmic_gpio_bind,
++	.probe = dby_pmic_gpio_probe,
++	.ops = &dby_pmic_gpio_ops,
++	.priv_auto = sizeof(struct dby_pmic_gpio_priv),
++};
+--- a/drivers/button/Makefile
++++ b/drivers/button/Makefile
+@@ -5,4 +5,5 @@
+ obj-$(CONFIG_BUTTON) += button-uclass.o
+ obj-$(CONFIG_BUTTON_ADC) += button-adc.o
+ obj-$(CONFIG_BUTTON_GPIO) += button-gpio.o
+-obj-$(CONFIG_BUTTON_QCOM_PMIC) += button-qcom-pmic.o
+\ No newline at end of file
++obj-$(CONFIG_BUTTON_QCOM_PMIC) += button-qcom-pmic.o
++obj-$(CONFIG_BUTTON_DBY_PMIC_GPIO) += button-dby-pmic-gpio.o
+--- a/drivers/button/Kconfig
++++ b/drivers/button/Kconfig
+@@ -48,4 +48,11 @@
+ 	  on Qualcomm SoCs. These will be configured as the Enter and Down keys
+ 	  respectively, allowing navigation of bootmenu with buttons on device.
+ 
++config BUTTON_DBY_PMIC_GPIO
++	bool "DBY-W09 read-only PMIC GPIO volume-up button"
++	depends on BUTTON && PMIC_QCOM
++	help
++	  Observe the inherited SID0 GPIO6 configuration without any writes.
++	  Reject unexpected configuration, report KEY_UP from the raw state.
++
+ endmenu
+--- /dev/null
++++ b/cmd/dby-boot.c
+@@ -0,0 +1,102 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* Fixed, RAM-only menu policy; no path returns to the command prompt. */
++#include <command.h>
++#include <console.h>
++#include <diagnostic.h>
++#include <env.h>
++#include <hang.h>
++#include <version.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++
++int dby_clear_misc(void);
++static bool entered;
++static int misc_status = -EPERM;
++enum dby_action { DBY_UBUNTU, DBY_REBOOT, DBY_OFF };
++static enum dby_action selected = DBY_UBUNTU;
++
++int dby_boot_misc_status(void)
++{
++	return misc_status;
++}
++
++static void __noreturn dby_ubuntu(void)
++{
++	clear_ctrlc();
++	run_command("sdread", 0);
++	/* Failed SD boot already counted down; even a failed reset cannot open CLI. */
++	exp_diag_flush();
++	hang();
++}
++
++static int do_dbyselect(struct cmd_tbl *cmdtp, int flag, int argc,
++			char *const argv[])
++{
++	if (argc != 2)
++		return CMD_RET_USAGE;
++	if (!strcmp(argv[1], "ubuntu"))
++		selected = DBY_UBUNTU;
++	else if (!strcmp(argv[1], "reboot"))
++		selected = DBY_REBOOT;
++	else if (!strcmp(argv[1], "off"))
++		selected = DBY_OFF;
++	else
++		return CMD_RET_USAGE;
++	return CMD_RET_SUCCESS;
++}
++
++static int do_dbyboot(struct cmd_tbl *cmdtp, int flag, int argc,
++		      char *const argv[])
++{
++	int ret;
++
++	if (entered)
++		dby_ubuntu();
++	entered = true;
++	console_assign(stdout, "vidconsole");
++	console_assign(stderr, "vidconsole");
++	puts("\x1b[0;1;37;40m");
++	console_clear();
++	puts("DBY-W09 SD LINUX BOOT " PLAIN_VERSION "\n");
++	misc_status = dby_clear_misc();
++	exp_diag_flush();
++	if (misc_status)
++		dby_ubuntu();
++	ret = console_assign(stdin, "button-kbd");
++	if (ret) {
++		printf("button-kbd rc=%d; starting Ubuntu\n", ret);
++		exp_diag_flush();
++		dby_ubuntu();
++	}
++	ret = env_set("bootmenu_0", "Ubuntu=dbyselect ubuntu");
++	ret |= env_set("bootmenu_1", "Reboot to HarmonyOS=dbyselect reboot");
++	ret |= env_set("bootmenu_2", "Power off=dbyselect off");
++	ret |= env_set("bootmenu_3", NULL);
++	ret |= env_set("bootmenu_default", "0");
++	ret |= env_set("bootmenu_delay", "5");
++	if (ret) {
++		printf("menu environment rc=%d; starting Ubuntu\n", ret);
++		exp_diag_flush();
++		dby_ubuntu();
++	}
++	selected = DBY_UBUNTU;
++	clear_ctrlc();
++	ret = run_command("bootmenu", 0);
++	clear_ctrlc();
++	if (ret)
++		selected = DBY_UBUNTU;
++	if (selected == DBY_REBOOT || selected == DBY_OFF) {
++		const char *command = selected == DBY_REBOOT ? "reset" : "poweroff";
++
++		printf("%s via PSCI\n", command);
++		exp_diag_flush();
++		ret = run_command(command, 0);
++		printf("%s returned rc=%d; starting Ubuntu\n", command, ret);
++		exp_diag_flush();
++		mdelay(1000);
++	}
++	dby_ubuntu();
++}
++
++U_BOOT_CMD(dbyboot, 1, 0, do_dbyboot, "fixed offline boot policy", "");
++U_BOOT_CMD(dbyselect, 2, 0, do_dbyselect, "select a fixed boot action", "ubuntu|reboot|off");
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -305,3 +305,5 @@
+ obj-y += misc-clear.o
+ 
+ obj-y += sd-read.o
++
++obj-y += dby-boot.o
+--- a/cmd/sd-read.c
++++ b/cmd/sd-read.c
+@@ -25,7 +25,7 @@
+ #include <image.h>
+ #include <asm/byteorder.h>
+ #include <linux/sizes.h>
+-int dby_clear_misc(void);
++int dby_boot_misc_status(void);
+ extern phys_addr_t dby_kernel_buffer;
+ extern phys_addr_t dby_initrd_buffer, dby_fdt_buffer;
+ static bool invoked;
+@@ -132,7 +132,7 @@
+ 
+ 	if (invoked) goto done;
+ 	invoked = true;
+-	misc_ret = dby_clear_misc();
++	misc_ret = dby_boot_misc_status();
+ 	if (misc_ret) { ret=misc_ret; step="misc clear failed"; goto done; }
+ 	step = "GPIO77";
+ 	ret = uclass_get_device(UCLASS_GPIO, 0, &gpio);
+--- a/boot/Kconfig
++++ b/boot/Kconfig
+@@ -1783,7 +1783,7 @@
+ 
+ config BOOTMENU_DISABLE_UBOOT_CONSOLE
+ 	bool "Disallow bootmenu to enter the U-Boot console"
+-	depends on AUTOBOOT_MENU_SHOW
++	depends on CMD_BOOTMENU
+ 	help
+ 	  If this option is enabled, user can not enter the U-Boot console from
+ 	  bootmenu. It increases the system security.
+--- a/arch/arm/dts/sd-read.dts
++++ b/arch/arm/dts/sd-read.dts
+@@ -149,6 +149,12 @@
+ 			reg = <0 0>;
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
++			volume-up@c500 {
++				compatible = "huawei,dby-w09-pmic-gpio-button";
++				reg = <0xc500>;
++				label = "Volume Up";
++				linux,code = <115>;
++			};
+ 			pon@800 {
+ 				compatible = "qcom,pm8998-pon";
+ 				reg = <0x800>;

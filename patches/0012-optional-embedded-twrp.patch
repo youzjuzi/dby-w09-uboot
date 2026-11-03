@@ -1,0 +1,387 @@
+--- a/cmd/dby-boot.c
++++ b/cmd/dby-boot.c
+@@ -12,7 +12,9 @@
+ int dby_clear_misc(void);
+ static bool entered;
+ static int misc_status = -EPERM;
+-enum dby_action { DBY_UBUNTU, DBY_REBOOT, DBY_OFF };
++int dby_twrp_boot(void);
++void dby_twrp_prepare_menu(void);
++enum dby_action { DBY_UBUNTU, DBY_REBOOT, DBY_OFF, DBY_TWRP };
+ static enum dby_action selected = DBY_UBUNTU;
+ 
+ bool dby_bootmenu_fixed(void)
+@@ -43,6 +45,8 @@
+ 		selected = DBY_UBUNTU;
+ 	else if (!strcmp(argv[1], "reboot"))
+ 		selected = DBY_REBOOT;
++	else if (IS_ENABLED(CONFIG_DBY_TWRP) && !strcmp(argv[1], "twrp"))
++		selected = DBY_TWRP;
+ 	else if (!strcmp(argv[1], "off"))
+ 		selected = DBY_OFF;
+ 	else
+@@ -63,6 +67,8 @@
+ 	puts("\x1b[0;1;37;40m");
+ 	console_clear();
+ 	puts("DBY-W09 SD LINUX BOOT " PLAIN_VERSION "\n");
++	if (IS_ENABLED(CONFIG_DBY_TWRP))
++		dby_twrp_prepare_menu();
+ 	misc_status = dby_clear_misc();
+ 	exp_diag_flush();
+ 	if (misc_status)
+@@ -75,8 +81,14 @@
+ 	}
+ 	ret = env_set("bootmenu_0", "Ubuntu=dbyselect ubuntu");
+ 	ret |= env_set("bootmenu_1", "Reboot to HarmonyOS=dbyselect reboot");
+-	ret |= env_set("bootmenu_2", "Power off=dbyselect off");
+-	ret |= env_set("bootmenu_3", NULL);
++	if (IS_ENABLED(CONFIG_DBY_TWRP)) {
++		ret |= env_set("bootmenu_2", "TWRP=dbyselect twrp");
++		ret |= env_set("bootmenu_3", "Power off=dbyselect off");
++	} else {
++		ret |= env_set("bootmenu_2", "Power off=dbyselect off");
++		ret |= env_set("bootmenu_3", NULL);
++	}
++	ret |= env_set("bootmenu_4", NULL);
+ 	ret |= env_set("bootmenu_default", "0");
+ 	ret |= env_set("bootmenu_delay", "5");
+ 	if (ret) {
+@@ -90,6 +102,13 @@
+ 	clear_ctrlc();
+ 	if (ret)
+ 		selected = DBY_UBUNTU;
++	if (IS_ENABLED(CONFIG_DBY_TWRP) && selected == DBY_TWRP) {
++		ret = dby_twrp_boot();
++		printf("TWRP failed/returned rc=%d; reboot to HarmonyOS in 15 seconds\n", ret);
++		exp_diag_flush();
++		mdelay(15000);
++		selected = DBY_REBOOT;
++	}
+ 	if (selected == DBY_REBOOT || selected == DBY_OFF) {
+ 		const char *command = selected == DBY_REBOOT ? "reset" : "poweroff";
+ 
+@@ -104,4 +123,4 @@
+ }
+ 
+ U_BOOT_CMD(dbyboot, 1, 0, do_dbyboot, "fixed offline boot policy", "");
+-U_BOOT_CMD(dbyselect, 2, 0, do_dbyselect, "select a fixed boot action", "ubuntu|reboot|off");
++U_BOOT_CMD(dbyselect, 2, 0, do_dbyselect, "select a fixed boot action", "ubuntu|reboot|off|twrp (if enabled)");
+--- /dev/null
++++ b/cmd/dby-twrp.c
+@@ -0,0 +1,274 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* DBY-W09: embedded stock kernel, preserved ABL initrd/FDT, no storage I/O. */
++#ifndef DBY_TWRP_HOST
++#include <command.h>
++#include <env.h>
++#include <image.h>
++#include <init.h>
++#include <asm/global_data.h>
++#include <asm/system.h>
++#include <linux/sizes.h>
++#include <linux/errno.h>
++#include <linux/libfdt.h>
++#include <u-boot/crc.h>
++#include <u-boot/sha256.h>
++#include <diagnostic.h>
++#include "../lib/lzma/LzmaTools.h"
++#include "dby-twrp-data.h"
++DECLARE_GLOBAL_DATA_PTR;
++#endif
++
++#define SNAP_GUARD SZ_512M
++#define FDT_LIMIT SZ_2M
++#define RD_LIMIT SZ_64M
++extern const unsigned char dby_stock_lzma[], dby_stock_lzma_end[];
++extern phys_addr_t dby_kernel_buffer, dby_initrd_buffer, dby_fdt_buffer;
++
++/* Explicit data section: metadata must survive BSS clearing and relocation. */
++static struct {
++    ulong fdt, rd, fdt_size, rd_size, top;
++    u32 fdt_crc, rd_crc;
++    u64 hook_ticks, copy_ticks, menu_ticks;
++    bool crc_ready;
++    int state;
++} snap __section(".data") = { .state = -ENODATA };
++
++/* Raw architectural counters only: safe before timer/driver initialization. */
++#ifndef DBY_TWRP_HOST
++static u64 twrp_counter(void)
++{
++    u64 ticks;
++    asm volatile("isb; mrs %0, cntpct_el0" : "=r" (ticks) : : "memory");
++    return ticks;
++}
++
++static u64 twrp_frequency(void)
++{
++    u64 frequency;
++    asm volatile("mrs %0, cntfrq_el0" : "=r" (frequency));
++    return frequency;
++}
++#endif
++
++static bool in_ram(ulong start, ulong size)
++{
++    int i;
++    if (!start || !size || start + size < start) return false;
++    for (i = 0; i < CONFIG_NR_DRAM_BANKS; i++) {
++        ulong base = gd->dram[i].start, len = gd->dram[i].size;
++        if (start >= base && start - base < len && size <= len - (start - base))
++            return true;
++    }
++    return false;
++}
++
++static bool overlaps(ulong a, ulong n, ulong b, ulong m)
++{
++    return a < b + m && b < a + n;
++}
++
++static int get_address(const void *fdt, int node, const char *name, ulong *value)
++{
++    const fdt32_t *p;
++    int len;
++    p = fdt_getprop(fdt, node, name, &len);
++    if (!p || (len != 4 && len != 8)) return -EINVAL;
++    *value = fdt32_to_cpu(p[0]);
++    if (len == 8) *value = (*value << 32) | fdt32_to_cpu(p[1]);
++    return 0;
++}
++
++/* Standard hook runs before relocation/malloc/FDT reservations are written. */
++static phys_addr_t snapshot_boot_data(void)
++{
++    const void *fdt = (void *)get_prev_bl_fdt_addr();
++    const char *args;
++    ulong end, start = (ulong)fdt, top = gd->ram_top;
++    int chosen, len;
++    snap.state = -EINVAL;
++    snap.crc_ready = false;
++    /* setup_ram_config subtracts TOP_HIDE AFTER this hook returns.
++     * Validate against that effective top, but return the original top so
++     * the core applies the existing reservation exactly once. */
++    if (top <= CONFIG_SYS_MEM_TOP_HIDE) return gd->ram_top;
++    top -= CONFIG_SYS_MEM_TOP_HIDE;
++    if (top < SNAP_GUARD || !in_ram(top - SNAP_GUARD, SNAP_GUARD) ||
++        !in_ram(start, sizeof(struct fdt_header)) || fdt_check_header(fdt))
++        return gd->ram_top;
++    snap.fdt_size = fdt_totalsize(fdt);
++    if (snap.fdt_size > FDT_LIMIT || !in_ram(start, snap.fdt_size) ||
++        fdt_check_full(fdt, snap.fdt_size)) return gd->ram_top;
++    chosen = fdt_path_offset(fdt, "/chosen");
++    if (chosen < 0 || get_address(fdt, chosen, "linux,initrd-start", &snap.rd) ||
++        get_address(fdt, chosen, "linux,initrd-end", &end) || end <= snap.rd)
++        return gd->ram_top;
++    snap.rd_size = end - snap.rd;
++    if (snap.rd_size < DBY_TWRP_SIZE || snap.rd_size > RD_LIMIT ||
++        !in_ram(snap.rd, snap.rd_size) ||
++        overlaps(start, snap.fdt_size, snap.rd, snap.rd_size) ||
++        overlaps(start, snap.fdt_size, top - SNAP_GUARD, SNAP_GUARD) ||
++        overlaps(snap.rd, snap.rd_size, top - SNAP_GUARD, SNAP_GUARD))
++        return gd->ram_top;
++    args = fdt_getprop(fdt, chosen, "bootargs", &len);
++    if (!args || len < 2 || len > 16384 || args[len - 1] ||
++        strnlen(args, len) != (size_t)len - 1) return gd->ram_top;
++    snap.fdt = start;
++    snap.top = top;
++    snap.state = 1;
++    return gd->ram_top; /* Existing relocation policy is unchanged. */
++}
++
++phys_addr_t board_get_usable_ram_top(phys_size_t total_size)
++{
++    u64 start = twrp_counter();
++    phys_addr_t top = snapshot_boot_data();
++
++    snap.hook_ticks = twrp_counter() - start;
++    return top;
++}
++
++/* Standard reserve_arch hook: copied data lies above the eventual stack and
++ * is included in lmb_reserve_uboot_region's NOOVERWRITE reservation. */
++static int preserve_boot_data(void)
++{
++    ulong rd, fdt;
++    if (snap.state != 1) return 0;
++    snap.state = -ERANGE;
++    rd = ALIGN_DOWN(gd->start_addr_sp - snap.rd_size, SZ_4K);
++    fdt = ALIGN_DOWN(rd - snap.fdt_size, SZ_4K);
++    if (fdt >= rd || rd >= gd->start_addr_sp ||
++        fdt < snap.top - SNAP_GUARD + CONFIG_STACK_SIZE ||
++        gd->start_addr_sp > snap.top ||
++        !in_ram(fdt - CONFIG_STACK_SIZE, gd->start_addr_sp - fdt + CONFIG_STACK_SIZE))
++        return 0;
++    memcpy((void *)rd, (void *)snap.rd, snap.rd_size);
++    memcpy((void *)fdt, (void *)snap.fdt, snap.fdt_size);
++    gd->start_addr_sp = fdt;
++    snap.rd = rd;
++    snap.fdt = fdt;
++    snap.state = 2;
++    return 0;
++}
++
++int reserve_arch(void)
++{
++    u64 start = twrp_counter();
++    int ret = preserve_boot_data();
++
++    snap.copy_ticks = twrp_counter() - start;
++    return ret;
++}
++
++static u64 ticks_to_ms(u64 ticks, u64 frequency)
++{
++    return (ticks / frequency) * 1000 + (ticks % frequency) * 1000 / frequency;
++}
++
++/* Also redrawn in the fixed menu header after bootmenu clears the screen. */
++void dby_twrp_print_timing(void)
++{
++    u64 frequency = twrp_frequency();
++
++    if (frequency)
++        printf("TWRP prep: hook %llu ms, copy %llu ms, menu at %llu ms\n",
++               (unsigned long long)ticks_to_ms(snap.hook_ticks, frequency),
++               (unsigned long long)ticks_to_ms(snap.copy_ticks, frequency),
++               (unsigned long long)ticks_to_ms(snap.menu_ticks, frequency));
++    else
++        puts("TWRP prep: timer frequency unavailable\n");
++    exp_diag_flush();
++}
++
++/* Called once by dbyboot after initr_caches, immediately after its title.
++ * Early source CRCs are deliberately omitted: the validated ABL buffers are
++ * outside the top window used for relocation/stack/malloc, with no second
++ * writer in this boot flow. This first-sight checksum detects later changes
++ * to the preserved copies; it does not authenticate the early copy itself.
++ * The independent TWRP SHA identity check remains mandatory at handoff. */
++void dby_twrp_prepare_menu(void)
++{
++    snap.menu_ticks = twrp_counter();
++    if (snap.state == 2 && !snap.crc_ready) {
++        snap.fdt_crc = crc32(0, (void *)snap.fdt, snap.fdt_size);
++        snap.rd_crc = crc32(0, (void *)snap.rd, snap.rd_size);
++        snap.crc_ready = true;
++    }
++    dby_twrp_print_timing();
++}
++
++static int twrp_error(const char *stage, int rc)
++{
++    printf("TWRP FAIL %s (rc=%d)\n", stage, rc);
++    exp_diag_flush();
++    return rc;
++}
++
++static bool matches_sha(const void *p, ulong len, const u8 *expected)
++{
++    u8 hash[SHA256_SUM_LEN];
++    sha256_csum_wd(p, len, hash, CHUNKSZ_SHA256);
++    return !memcmp(hash, expected, sizeof(hash));
++}
++
++static bool contains_twrp(void)
++{
++    const u8 *p = (void *)snap.rd;
++    ulong i;
++    for (i = 0; i <= snap.rd_size - DBY_TWRP_SIZE; i++) {
++        if (p[i] == dby_twrp_prefix[0] &&
++            !memcmp(p + i, dby_twrp_prefix, sizeof(dby_twrp_prefix)) &&
++            matches_sha(p + i, DBY_TWRP_SIZE, dby_twrp_sha)) return true;
++    }
++    return false;
++}
++
++int dby_twrp_boot(void)
++{
++    ulong load, relocated, image_size;
++    SizeT output = DBY_KERNEL_RAW_SIZE;
++    const char *args;
++    char command[160];
++    int node;
++    if (snap.state != 2 || !snap.crc_ready || !dby_kernel_buffer ||
++        !dby_initrd_buffer || !dby_fdt_buffer) {
++        printf("TWRP FAIL boot data unavailable (%d)\n", snap.state);
++        return twrp_error("snapshot unavailable", -EINVAL);
++    }
++    if (crc32(0, (void *)snap.fdt, snap.fdt_size) != snap.fdt_crc ||
++        crc32(0, (void *)snap.rd, snap.rd_size) != snap.rd_crc || !contains_twrp()) {
++        puts("TWRP FAIL preserved data or TWRP identity\n");
++        return twrp_error("snapshot CRC or ramdisk identity", -EINVAL);
++    }
++    if (dby_stock_lzma_end - dby_stock_lzma != DBY_KERNEL_LZMA_SIZE ||
++        !matches_sha(dby_stock_lzma, DBY_KERNEL_LZMA_SIZE, dby_kernel_lzma_sha))
++        return twrp_error("embedded payload SHA/length", -EINVAL);
++    load = dby_kernel_buffer + DBY_KERNEL_OFFSET;
++    if (DBY_KERNEL_IMAGE_SIZE > SZ_128M - DBY_KERNEL_OFFSET ||
++        !in_ram(dby_kernel_buffer, SZ_128M) ||
++        !in_ram(dby_initrd_buffer, SZ_128M) || !in_ram(dby_fdt_buffer, FDT_LIMIT))
++        return twrp_error("destination bounds", -EINVAL);
++    puts("TWRP verified; decompressing embedded stock kernel\n");
++    exp_diag_flush();
++    if (lzmaBuffToBuffDecompress((void *)load, &output, dby_stock_lzma,
++                               DBY_KERNEL_LZMA_SIZE) || output != DBY_KERNEL_RAW_SIZE ||
++        !matches_sha((void *)load, output, dby_kernel_raw_sha)) return twrp_error("decompress/raw SHA", -EINVAL);
++    if (booti_setup(load, &relocated, &image_size, false) || relocated != load ||
++        image_size != DBY_KERNEL_IMAGE_SIZE) return twrp_error("ARM64 placement", -EINVAL);
++    if (fdt_open_into((void *)snap.fdt, (void *)dby_fdt_buffer, FDT_LIMIT))
++        return twrp_error("FDT copy", -EINVAL);
++    memcpy((void *)dby_initrd_buffer, (void *)snap.rd, snap.rd_size);
++    node = fdt_path_offset((void *)dby_fdt_buffer, "/chosen");
++    args = fdt_getprop((void *)dby_fdt_buffer, node, "bootargs", NULL);
++    if (!args || env_set("bootargs", args) ||
++        fdt_setprop_u64((void *)dby_fdt_buffer, node, "linux,initrd-start", dby_initrd_buffer) ||
++        fdt_setprop_u64((void *)dby_fdt_buffer, node, "linux,initrd-end", dby_initrd_buffer + snap.rd_size) ||
++        env_set("initrd_high", "ffffffffffffffff") ||
++        env_set("fdt_high", "ffffffffffffffff")) return twrp_error("chosen/environment", -EINVAL);
++    snprintf(command, sizeof(command), "booti %lx %llx:%lx %llx", load,
++             (unsigned long long)dby_initrd_buffer, snap.rd_size,
++             (unsigned long long)dby_fdt_buffer);
++    puts("TWRP handoff: stock kernel + preserved TWRP/vendor initrd + ABL DT\n");
++    exp_diag_flush();
++    node = run_command(command, 0);
++    return twrp_error("booti returned", node);
++}
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -307,3 +307,5 @@
+ obj-y += sd-read.o
+ 
+ obj-y += dby-boot.o
++
++obj-$(CONFIG_DBY_TWRP) += dby-twrp.o dby-stock.o
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -3254,3 +3254,11 @@
+ 	  spawn command.
+ 
+ endif
++
++config DBY_TWRP
++	bool "Embed user-provided DBY recovery kernel"
++	depends on ARCH_SNAPDRAGON && CMD_BOOTI && LZMA
++	default n
++	help
++	  Preserve the previous bootloader initrd/FDT and offer TWRP in the
++	  fixed board menu. Requires generated private payload build inputs.
+--- a/cmd/bootmenu.c
++++ b/cmd/bootmenu.c
+@@ -481,6 +481,8 @@
+ 	return NULL;
+ }
+ 
++void dby_twrp_print_timing(void);
++
+ static void menu_display_statusline(struct menu *m)
+ {
+ 	struct bootmenu_entry *entry;
+@@ -493,6 +495,8 @@
+ 
+ 	printf(ANSI_CURSOR_POSITION, 1, 1);
+ 	puts(ANSI_CLEAR_LINE);
++	if (IS_ENABLED(CONFIG_DBY_TWRP) && dby_bootmenu_fixed())
++		dby_twrp_print_timing();
+ 	printf(ANSI_CURSOR_POSITION, 2, 3);
+ 	puts("*** U-Boot Boot Menu ***");
+ 	puts(ANSI_CLEAR_LINE_TO_END);

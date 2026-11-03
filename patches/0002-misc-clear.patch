@@ -1,0 +1,218 @@
+--- /dev/null
++++ b/cmd/misc-clear.c
+@@ -0,0 +1,202 @@
++// SPDX-License-Identifier: GPL-2.0+
++/* One-shot recovery command clearing: no exported arming interface, one attempt per boot. */
++#ifdef DBY_MISC_HOST_TEST
++#include "host-shim.h"
++#else
++#include <diagnostic.h>
++#include <command.h>
++#include <console.h>
++#include <dm.h>
++#include <dm/uclass.h>
++#include <dm/uclass-internal.h>
++#include <part.h>
++#include <ufs.h>
++#include <malloc.h>
++#include <video.h>
++#include <video_console.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <asm/cache.h>
++#include <misc-clear.h>
++#endif
++#include <misc-partition-private.h>
++
++enum permission { CLOSED, ARMED, BLOCK_PASSED, SCSI_PASSED, WRITE_SENT,
++                  SYNC_ARMED, SYNC_SENT };
++static enum permission permission;
++static bool spent, invoked;
++static struct udevice *bound;
++static const void *payload;
++
++static void revoke(void)
++{
++	permission = CLOSED;
++	bound = NULL;
++	payload = NULL;
++}
++static int reject(void)
++{
++	revoke();
++	return -EROFS;
++}
++static bool geometry(struct udevice *dev)
++{
++	struct blk_desc *d;
++	if (!dev) return false;
++	d = dev_get_uclass_plat(dev);
++	return d->uclass_id == UCLASS_SCSI && d->target == 0 &&
++	       d->lun == MISC_LUN && d->blksz == MISC_BLKSZ &&
++	       MISC_LUN == 0 && MISC_BLKSZ == 4096 && MISC_START <= 0xffffffffULL;
++}
++static bool exact_command(const unsigned char *buf)
++{
++	static const unsigned char expected[] = "boot-recovery";
++	return buf[13] == 0 && !memcmp(buf, expected, sizeof(expected) - 1);
++}
++/* Sole caller in firmware: do_miscclear, after GPT and real read validation. */
++static int arm(struct udevice *dev, const void *before, void *expected)
++{
++	if (spent || permission != CLOSED || !geometry(dev) || !exact_command(before))
++		return reject();
++	spent = true; /* Never restored, including after an error. */
++	memcpy(expected, before, MISC_BLKSZ);
++	memset(expected, 0, 32);
++	bound = dev;
++	payload = expected;
++	permission = ARMED;
++	return 0;
++}
++int misc_block_gate(struct udevice *dev, lbaint_t start, lbaint_t count, const void *buf)
++{
++	if (permission != ARMED || dev != bound || !geometry(dev) ||
++	    start != MISC_START || count != 1 || buf != payload)
++		return reject();
++	permission = BLOCK_PASSED;
++	return 0;
++}
++int misc_scsi_gate(struct udevice *dev, lbaint_t start, lbaint_t count, const void *buf)
++{
++	if (permission != BLOCK_PASSED || dev != bound || !geometry(dev) ||
++	    start != MISC_START || count != 1 || buf != payload)
++		return reject();
++	permission = SCSI_PASSED;
++	return 0;
++}
++int misc_transport_gate(struct udevice *controller, struct scsi_cmd *c)
++{
++	u32 lba = (u32)c->cmd[2] << 24 | (u32)c->cmd[3] << 16 |
++	          (u32)c->cmd[4] << 8 | c->cmd[5];
++	unsigned int count = (unsigned int)c->cmd[7] << 8 | c->cmd[8];
++	if (!bound || !geometry(bound) || controller != bound->parent ||
++	    c->target != 0 || c->lun != MISC_LUN || c->cmdlen != 10 ||
++	    lba != MISC_START || count != 1 || c->cmd[6] || c->cmd[9])
++		return reject();
++	if (c->cmd[0] == 0x2a && permission == SCSI_PASSED &&
++	    c->cmd[1] == 0x08 && c->pdata == payload &&
++	    c->datalen == MISC_BLKSZ && c->dma_dir == DMA_TO_DEVICE) {
++		permission = WRITE_SENT; /* Consumed before submitting, never retried. */
++		return 0;
++	}
++	if (c->cmd[0] == 0x35 && permission == SYNC_ARMED &&
++	    c->cmd[1] == 0 && !c->datalen && c->dma_dir == DMA_NONE) {
++		permission = SYNC_SENT;
++		return 0;
++	}
++	return reject();
++}
++static int arm_sync(void)
++{
++	if (permission != WRITE_SENT) return reject();
++	permission = SYNC_ARMED;
++	return 0;
++}
++#ifndef DBY_MISC_HOST_TEST
++int dby_clear_misc(void)
++{
++	struct udevice *scsi = NULL, *bdev = NULL;
++	struct blk_desc *desc;
++	struct disk_partition part;
++	unsigned char *before = NULL, *expected = NULL, *after = NULL;
++	const char *result = "NOT WRITTEN", *reason = "already invoked";
++	long blocks;
++	int ret = -EPERM;
++	console_assign(stdout, "vidconsole");
++	console_assign(stderr, "vidconsole");
++	
++	if (invoked) goto done;
++	invoked = true;
++	reason = "UFS initialization";
++	ret = ufs_probe_dev(0);
++	if (ret) goto done;
++	reason = "LUN 0 scan";
++	ret = uclass_find_first_device(UCLASS_SCSI, &scsi);
++	if (!ret && !scsi) ret = -ENODEV;
++	if (!ret) ret = scsi_scan_dev(scsi, false);
++	if (ret) goto done;
++	reason = "block geometry";
++	ret = uclass_find_first_device(UCLASS_BLK, &bdev);
++	while (!ret && bdev) {
++		desc = dev_get_uclass_plat(bdev);
++		if (desc->uclass_id == UCLASS_SCSI) break;
++		uclass_find_next_device(&bdev);
++	}
++	if (!ret && !geometry(bdev)) ret = -EINVAL;
++	if (ret) goto done;
++	desc = dev_get_uclass_plat(bdev);
++	reason = "misc partition lookup";
++	ret = part_get_info_by_name(desc, "misc", &part);
++	if (ret < 0) goto done;
++	reason = "misc geometry mismatch";
++	ret = part.start == MISC_START && part.size == MISC_BLOCKS &&
++	      part.blksz == MISC_BLKSZ ? 0 : -EINVAL;
++	if (ret) goto done;
++	reason = "buffer allocation";
++	before = memalign(ARCH_DMA_MINALIGN, MISC_BLKSZ);
++	expected = memalign(ARCH_DMA_MINALIGN, MISC_BLKSZ);
++	after = memalign(ARCH_DMA_MINALIGN, MISC_BLKSZ);
++	ret = before && expected && after ? 0 : -ENOMEM;
++	if (ret) goto done;
++	reason = "initial read";
++	blocks = blk_read(bdev, MISC_START, 1, before);
++	ret = blocks == 1 ? 0 : (blocks < 0 ? (int)blocks : -EIO);
++	if (ret) goto done;
++	reason = "command string is not boot-recovery";
++	ret = exact_command(before) ? 0 : -EINVAL;
++	if (ret) goto done;
++	reason = "one-shot permission";
++	ret = arm(bdev, before, expected);
++	if (ret) goto done;
++	result = "WRITE FAILED";
++	reason = "WRITE(10)";
++	blocks = blk_write(bdev, MISC_START, 1, expected);
++	ret = blocks == 1 ? 0 : (blocks < 0 ? (int)blocks : -EIO);
++	if (ret) goto done;
++	reason = "SYNCHRONIZE CACHE(10)";
++	ret = arm_sync();
++	if (!ret) ret = misc_scsi_sync(bdev);
++	revoke(); /* Readback can no longer authorize any write. */
++	if (ret) goto done;
++	result = "VERIFY FAILED";
++	reason = "device readback";
++	memset(after, 0xa5, MISC_BLKSZ);
++	blocks = blk_read(bdev, MISC_START, 1, after);
++	ret = blocks == 1 ? 0 : (blocks < 0 ? (int)blocks : -EIO);
++	if (ret) goto done;
++	reason = "full block comparison";
++	ret = memcmp(expected, after, MISC_BLKSZ) ? -EIO : 0;
++	if (ret) goto done;
++	result = "CLEARED OK";
++	reason = "full block verified";
++
++done:
++	revoke();
++	exp_diag_misc(result, reason, ret);
++	free(before); free(expected); free(after);
++	return ret;
++}
++static int do_miscclear(struct cmd_tbl *cmdtp, int flag, int argc, char *const argv[])
++{
++	return dby_clear_misc() ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
++}
++U_BOOT_CMD(miscclear, 1, 0, do_miscclear, "clear only verified misc boot-recovery once", "");
++#endif
+--- /dev/null
++++ b/include/misc-clear.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++#ifndef DBY_MISC_CLEAR_H
++#define DBY_MISC_CLEAR_H
++#include <blk.h>
++#include <scsi.h>
++int misc_block_gate(struct udevice *dev, lbaint_t start, lbaint_t count, const void *buf);
++int misc_scsi_gate(struct udevice *dev, lbaint_t start, lbaint_t count, const void *buf);
++int misc_transport_gate(struct udevice *controller, struct scsi_cmd *ccb);
++int misc_scsi_sync(struct udevice *dev);
++#endif
