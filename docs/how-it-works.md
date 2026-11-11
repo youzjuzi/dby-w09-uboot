@@ -78,7 +78,7 @@ The assets to protect are the integrity of internal storage and the integrity of
 
 The historical ten-patch build with the recorded owner inputs reproduced `u-boot.bin` SHA-256 `12213ff67f89ca67e528509cb0466006cfae55cae0af11009036f3c1c8516474`; its Recovery image was `43618116c35fa4e01101241499bd1e42bc360602805c5d7b2ffd2652c354fa11`. The 2026-11-02 H boot records apply to that combination, not every mechanism or subsequent build.
 
-The twelve-patch default build without payload has offline evidence only and has not been separately device-validated. The TWRP build was observed on one tablet on 2026-11-03 (R): four menu actions, Ubuntu, HarmonyOS reboot, TWRP with touch and power off. Other devices/firmware remain U. New version-string builds require new device validation; historical R is not promoted to H.
+The neutral-version twelve-patch default build was observed on one tablet on 2026-11-03 (R): three menu actions, Ubuntu, HarmonyOS reboot and power off; see the current-artifact section in README. The TWRP build was observed on one tablet on 2026-11-03 (R): four menu actions, Ubuntu, HarmonyOS reboot, TWRP with touch and power off. Other devices/firmware remain U. New version-string builds require new device validation; historical R is not promoted to H.
 
 ### Optional recovery handoff
 

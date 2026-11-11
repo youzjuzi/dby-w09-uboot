@@ -1,5 +1,7 @@
 # dby-w09-uboot
 
+One-tablet development bootloader; no vendor images are supplied. Requires an unlocked bootloader and replacement Recovery: a wrong image can leave the tablet unbootable. The optional TWRP environment can access internal storage and needs an owner trust assessment. **The installation workflow has not been independently validated by a third party starting from a blank card; feedback is welcome.**
+
 Boot Ubuntu from a microSD card on the Huawei MatePad 11 (DBY-W09) by placing U-Boot in the kernel segment of the owner's stock Recovery image. Normal power-on remains HarmonyOS; prepared card boot needs no computer.
 
 [简体中文](README.zh-CN.md) · [Project hub](https://github.com/youzjuzi/dby-w09-linux) · [Linux kernel](https://github.com/youzjuzi/dby-w09-kernel) · [Build-to-install guide](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/install.md)
@@ -63,7 +65,7 @@ Flashing, rollback, card preparation, first boot and checks are owner operations
 
 p1 is FAT32 label `UBOOT`. U-Boot reads only `UBOOT/Image` (raw/gzip), `UBOOT/dby-w09.dtb`, `UBOOT/initrd.img` and `UBOOT/MANIFEST`. MANIFEST has exactly three lowercase SHA-256 lines, with two spaces before the basenames, ordered Image, dby-w09.dtb, initrd.img. Mismatch aborts boot. It authenticates no publisher; someone replacing both payloads and manifest can defeat this consistency check.
 
-Linux additionally consumes `UBOOT/dby-device.img`; the hub's bundle manifest/installer checks that file. p2 is ext4 label `ubuntu-root`. See the [full card layout](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/architecture.md). The menu is Ubuntu / Reboot to HarmonyOS / Power off, or Ubuntu / Reboot to HarmonyOS / TWRP / Power off when built with a payload. Volume keys move, power confirms, and the default is Ubuntu after 5 seconds. The fixed menu has no Quit entry; ESC and invalid shortcuts do not select an action. The twelve-patch TWRP build was observed on one tablet on 2026-11-03: four menu actions, Ubuntu, HarmonyOS reboot, TWRP with touch and power off (**R**, user observation). The current default build without a payload has not been separately device-tested (**U**).
+Linux additionally consumes `UBOOT/dby-device.img`; the hub's bundle manifest/installer checks that file. p2 is ext4 label `ubuntu-root`. See the [full card layout](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/architecture.md). The menu is Ubuntu / Reboot to HarmonyOS / Power off, or Ubuntu / Reboot to HarmonyOS / TWRP / Power off when built with a payload. Volume keys move, power confirms, and the default is Ubuntu after 5 seconds. The fixed menu has no Quit entry; ESC and invalid shortcuts do not select an action. The twelve-patch TWRP build was observed on one tablet on 2026-11-03: four menu actions, Ubuntu, HarmonyOS reboot, TWRP with touch and power off (**R**, user observation). The neutral-version default build was also observed on the same tablet on 2026-11-03 (**R**), within the short scope of the current-artifact section above.
 
 ## Storage boundary and limitations
 
@@ -71,7 +73,7 @@ Source-level write gates (O) keep SD read-only. The internal exception clears on
 
 While U-Boot occupies Recovery, factory reset is unavailable; restore your verified stock Recovery first. Do not flash other internal partitions. Hardware acceptance of a modified image is limited to the recorded unlocked device. The project does not supply stock images or promise compatibility with other firmware.
 
-This is an independent, unofficial device-porting project, not affiliated with, endorsed by or sponsored by Huawei, Canonical/Ubuntu, Qualcomm or TeamWin. Names and trademarks belong to their respective owners. Vendor firmware is not provided; other device/firmware compatibility is not guaranteed.
+This is an independent, unofficial device-porting project, not affiliated with, endorsed by or sponsored by Huawei/HarmonyOS/MatePad, Canonical/Ubuntu, Qualcomm or TeamWin. Names and trademarks belong to their respective owners. Vendor firmware is not provided; other device/firmware compatibility is not guaranteed.
 
 An already unlocked bootloader is required. Flashing replaces Recovery; the modified image does not match the original AVB digest. An incorrect image or operation can make the device unbootable or prevent entry into Recovery. Keep and verify your own stock rollback image before flashing, and restore stock Recovery before a factory reset. SD installation erases the selected card. Software is provided as is, without warranty. See the hub installation guide linked above.
 

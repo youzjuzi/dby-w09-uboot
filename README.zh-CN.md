@@ -1,5 +1,7 @@
 # dby-w09-uboot
 
+仅有一台平板证据的开发引导器，不提供厂商镜像。需要已解锁 Bootloader 并替换 Recovery，错误镜像可能导致无法启动；可选 TWRP 环境能访问内部存储，须由所有者判断信任。**安装流程未经第三方从空白卡独立验证，欢迎反馈。**
+
 将 U-Boot 放进所有者原厂 Recovery 镜像的内核段，在华为 MatePad 11（DBY-W09）上从 microSD 卡启动 Ubuntu。正常开机仍进鸿蒙，准备完成后的卡启动无需电脑。
 
 [English](README.md) · [项目中心](https://github.com/youzjuzi/dby-w09-linux) · [Linux 内核](https://github.com/youzjuzi/dby-w09-kernel) · [构建安装指南](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/install.zh-CN.md)
@@ -63,7 +65,7 @@ python3 -I -B tests/test-pack-recovery.py
 
 p1 为 FAT32、卷标 `UBOOT`。U-Boot 只读 `UBOOT/Image`（原始／gzip）、`UBOOT/dby-w09.dtb`、`UBOOT/initrd.img`、`UBOOT/MANIFEST`。MANIFEST 恰好三行小写 SHA-256，文件名前两个空格，顺序为 Image、dby-w09.dtb、initrd.img；不符即中止。它只检查一致性，不认证发布者，不能抵御同时替换载荷和清单。
 
-Linux 另读取 `UBOOT/dby-device.img`，由中心仓库 bundle 清单／安装器校验。p2 为 ext4、卷标 `ubuntu-root`，见[完整布局](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/architecture.md)。无载荷菜单为 Ubuntu／Reboot to HarmonyOS／Power off；带载荷时在关机前加入 TWRP。音量键移动、电源键确认，默认 5 秒后进入 Ubuntu。固定菜单不含 Quit，ESC 与无效快捷键不选择动作。十二补丁 TWRP 版于 2026-11-03 在一台平板上观察到四项菜单、Ubuntu、回鸿蒙、TWRP 与触摸、关机可用（**R 用户观察**）；当前默认无载荷版未单独上机验证（**U**）。
+Linux 另读取 `UBOOT/dby-device.img`，由中心仓库 bundle 清单／安装器校验。p2 为 ext4、卷标 `ubuntu-root`，见[完整布局](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/architecture.md)。无载荷菜单为 Ubuntu／Reboot to HarmonyOS／Power off；带载荷时在关机前加入 TWRP。音量键移动、电源键确认，默认 5 秒后进入 Ubuntu。固定菜单不含 Quit，ESC 与无效快捷键不选择动作。十二补丁 TWRP 版于 2026-11-03 在一台平板上观察到四项菜单、Ubuntu、回鸿蒙、TWRP 与触摸、关机可用（**R 用户观察**）；中性版本后缀的默认无载荷版亦有同一平板 2026-11-03 的短时观察（**R**），范围见上方当前产物节。
 
 ## 存储边界与限制
 
@@ -71,7 +73,7 @@ Linux 另读取 `UBOOT/dby-device.img`，由中心仓库 bundle 清单／安装�
 
 U-Boot 占用 Recovery 时无法恢复出厂设置，操作前先还原已校验的原厂 Recovery；不刷其他内部存储分区。修改镜像的硬件接受结果限于记录中的已解锁设备，不提供原厂镜像或其他固件兼容承诺。
 
-本项目是独立、非官方的设备移植工作，与 Huawei、Canonical/Ubuntu、Qualcomm 或 TeamWin 无关联，未获其认可或赞助；相关名称和商标属于各自权利人。不提供厂商固件，不保证其他设备或固件兼容。
+本项目是独立、非官方的设备移植工作，与 Huawei／HarmonyOS／MatePad、Canonical/Ubuntu、Qualcomm 或 TeamWin 无关联，未获其认可或赞助；相关名称和商标属于各自权利人。不提供厂商固件，不保证其他设备或固件兼容。
 
 需要已经解锁的 Bootloader。刷写会替换 Recovery，修改镜像不匹配原 AVB 摘要；错误镜像或操作可能导致无法启动或无法进入 Recovery。刷前先保留并核对自己的原厂回退镜像，恢复出厂前先刷回原厂 Recovery。写卡会清除所选 SD 卡数据。软件按现状提供，无担保。详见上方中心仓库安装指南。
 
