@@ -1,6 +1,6 @@
 # dby-w09-uboot
 
-R4 (2026-11-15): see the [fresh rebuild and separate 16 GB card checklist](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/fresh-install.md). Existing private inputs are reused; extraction is not repeated. New-card installation/first boot are Pending; third-party reproduction remains unverified. Preserve the working card for rollback and retain the existing Recovery/U-Boot without rebuilding or reflashing.
+R4 (2026-11-15): the maintainer passed a fresh installation from a blank **16 GB card** following the public documentation, with bundle **`20261115-1`** (**H + R**: Claude’s SSH checks and the user’s observations, supplied in the maintainer report). See the [fresh-install results and checklist](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/fresh-install.md). Independent third-party reproduction remains **U**. Existing private inputs were reused; extraction was not repeated and retains its prior evidence level. The existing Recovery/U-Boot was retained, without rebuilding or reflashing; preserve the previous working card for rollback.
 
 One-tablet development bootloader; no vendor images are supplied. Requires an unlocked bootloader and replacement Recovery: a wrong image can leave the tablet unbootable. The optional TWRP environment can access internal storage and needs an owner trust assessment. **The installation workflow has not been independently validated by a third party starting from a blank card; feedback is welcome.**
 

@@ -1,6 +1,6 @@
 # dby-w09-uboot
 
-R4（2026-11-15）：见[从零重建与另一张 16 GB 新卡清单](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/fresh-install.md)。已有私有输入复用，提取不重做；新卡安装／首启 Pending，第三方独立复现仍未验证。保留现用卡作回退，现有 Recovery/U-Boot 不重编、不重刷。
+R4（2026-11-15）：维护者从空白 **16 GB 新卡**照公开文档全新安装通过，包 **`20261115-1`**（**H + R**：用户提供的 Claude SSH 核对与用户交互观察）。见[新卡结果与操作清单](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/fresh-install.md)。第三方独立复现仍为 **U**；已有私有输入复用，提取未重做、保持原证据级别。现有 Recovery/U-Boot 未重编、未重刷；原工作卡保留作回退。
 
 仅有一台平板证据的开发引导器，不提供厂商镜像。需要已解锁 Bootloader 并替换 Recovery，错误镜像可能导致无法启动；可选 TWRP 环境能访问内部存储，须由所有者判断信任。**安装流程未经第三方从空白卡独立验证，欢迎反馈。**
 
