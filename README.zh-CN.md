@@ -1,5 +1,7 @@
 # dby-w09-uboot
 
+R4（2026-11-15）：见[从零重建与另一张 16 GB 新卡清单](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/fresh-install.md)。已有私有输入复用，提取不重做；新卡安装／首启 Pending，第三方独立复现仍未验证。保留现用卡作回退，现有 Recovery/U-Boot 不重编、不重刷。
+
 仅有一台平板证据的开发引导器，不提供厂商镜像。需要已解锁 Bootloader 并替换 Recovery，错误镜像可能导致无法启动；可选 TWRP 环境能访问内部存储，须由所有者判断信任。**安装流程未经第三方从空白卡独立验证，欢迎反馈。**
 
 将 U-Boot 放进所有者原厂 Recovery 镜像的内核段，在华为 MatePad 11（DBY-W09）上从 microSD 卡启动 Ubuntu。正常开机仍进鸿蒙，准备完成后的卡启动无需电脑。

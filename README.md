@@ -1,5 +1,7 @@
 # dby-w09-uboot
 
+R4 (2026-11-15): see the [fresh rebuild and separate 16 GB card checklist](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/fresh-install.md). Existing private inputs are reused; extraction is not repeated. New-card installation/first boot are Pending; third-party reproduction remains unverified. Preserve the working card for rollback and retain the existing Recovery/U-Boot without rebuilding or reflashing.
+
 One-tablet development bootloader; no vendor images are supplied. Requires an unlocked bootloader and replacement Recovery: a wrong image can leave the tablet unbootable. The optional TWRP environment can access internal storage and needs an owner trust assessment. **The installation workflow has not been independently validated by a third party starting from a blank card; feedback is welcome.**
 
 Boot Ubuntu from a microSD card on the Huawei MatePad 11 (DBY-W09) by placing U-Boot in the kernel segment of the owner's stock Recovery image. Normal power-on remains HarmonyOS; prepared card boot needs no computer.
