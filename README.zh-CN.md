@@ -12,7 +12,7 @@ R4（2026-11-15）：维护者从空白 **16 GB 新卡**照公开文档全新安
 
 **H 实机记录**：2026-11-02，一台已解锁、HarmonyOS 4.2.0.213 的 DBY-W09 经 Recovery → U-Boot 启动测试／完整 Ubuntu。上述 **H** 属于旧十补丁基线；离线重建与十二补丁版的 **R 用户观察**范围分别见下。其他个体、固件和原厂镜像组合为 **U 未验证**。这是开发源码，不是通用安装器，也不代表通用绕过验证启动；[状态页](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/status.md)区分当前与历史证据。
 
-本仓库提供 U-Boot v2026.10 的十二个补丁、配置、板级数据、`build.sh` 和 `tools/pack-recovery.py`，不含原厂 Recovery、厂商固件、Linux 或 Ubuntu。[中心仓库](https://github.com/youzjuzi/dby-w09-linux)负责驱动／bundle／rootfs／SD 安装；[内核仓库](https://github.com/youzjuzi/dby-w09-kernel)负责 Linux 补丁、配置与板级 DTS。
+本仓库提供 U-Boot v2026.10 的十三个补丁、配置、板级数据、`build.sh` 和 `tools/pack-recovery.py`，不含原厂 Recovery、厂商固件、Linux 或 Ubuntu。[中心仓库](https://github.com/youzjuzi/dby-w09-linux)负责驱动／bundle／rootfs／SD 安装；[内核仓库](https://github.com/youzjuzi/dby-w09-kernel)负责 Linux 补丁、配置与板级 DTS。
 
 ## 复现锁定构建
 
@@ -24,15 +24,15 @@ JOBS=8 sh build.sh /path/to/u-boot-2026.10.tar.gz \
 sha256sum /path/to/new-build/out/u-boot.bin
 ```
 
-源码／输出目录必须尚不存在。`build.sh` 校验上游 SHA-256 `f943a88389c8fd70a6b0d061a88267465e143c7ca6ea2b75837ab20f5b60c739`，fuzz=0 应用十二个补丁、复制板级输入、运行 olddefconfig 并比较最终配置。脚本固定 `SOURCE_DATE_EPOCH=1791417600`、构建用户 `builder` 与主机 `offline`；`CROSS_COMPILE` 默认 `aarch64-linux-gnu-`，`JOBS` 默认 8。摘要、补丁或配置不符时停止，不能忽略错误继续。
+源码／输出目录必须尚不存在。`build.sh` 校验上游 SHA-256 `f943a88389c8fd70a6b0d061a88267465e143c7ca6ea2b75837ab20f5b60c739`，fuzz=0 应用十三个补丁、复制板级输入、运行 olddefconfig 并比较最终配置。脚本固定 `SOURCE_DATE_EPOCH=1791417600`、构建用户 `builder` 与主机 `offline`；`CROSS_COMPILE` 默认 `aarch64-linux-gnu-`，`JOBS` 默认 8。摘要、补丁或配置不符时停止，不能忽略错误继续。
 
-旧十补丁基线产物（O，早期注释整理后重建一致；不代表当前十二补丁构建）：
+旧十补丁基线产物（O，早期注释整理后重建一致；不代表当前构建）：
 
 ```text
 12213ff67f89ca67e528509cb0466006cfae55cae0af11009036f3c1c8516474  u-boot.bin
 ```
 
-## 当前十二补丁产物（O，2026-11-03）
+## 已记录的十二补丁产物（O，2026-11-03）
 
 中性版本后缀为 `-dby-w09`。2026-11-03 所有者在一台已解锁平板上依次刷入了这两个候选（用户观察 R）：默认版三项菜单，进入 Ubuntu、重启回鸿蒙、关机均正常；TWRP 版另可进入 TWRP，其余动作也正常。仅为一台设备、同一原厂输入的短时检查，不代表更广泛验证，重新构建后不能继承该观察。Recovery 哈希使用记录中的同一原厂输入，仅适用于该组合。TWRP 产物含厂商内容，不得作为本项目二进制发布。
 
@@ -71,7 +71,7 @@ Linux 另读取 `UBOOT/dby-device.img`，由中心仓库 bundle 清单／安装�
 
 ## 存储边界与限制
 
-源码写门禁（O）保持 SD 只读；内部存储例外仅在核对 `boot-recovery` 及 NUL 终止字节后清 `misc` 前 32 字节，再读回验证。适配其他设备前须核对板级分区／帧缓冲数据；字符串碰巧匹配不证明任意分区布局安全。详见[技术说明](docs/how-it-works.md)（英语）。
+源码写门禁（O）保持 SD 只读；内部存储例外仅在核对 `boot-recovery` 及 NUL 终止字节后清 `misc` 前 32 字节，再读回验证。Linux `reboot recovery` 通过 PON 重启原因进入、misc 命令区 32 字节全零时，U-Boot 不写入也不同步 misc，直接继续；其它命令仍拒绝。MISC 结果在菜单／失败画面重显，拒绝未知命令时仅显示这 32 字节的十六进制。新路径待实机验证（U）。适配其他设备前须核对板级分区／帧缓冲数据；字符串碰巧匹配不证明任意分区布局安全。详见[技术说明](docs/how-it-works.md)（英语）。
 
 U-Boot 占用 Recovery 时无法恢复出厂设置，操作前先还原已校验的原厂 Recovery；不刷其他内部存储分区。修改镜像的硬件接受结果限于记录中的已解锁设备，不提供原厂镜像或其他固件兼容承诺。
 

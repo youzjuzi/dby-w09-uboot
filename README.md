@@ -12,7 +12,7 @@ Boot Ubuntu from a microSD card on the Huawei MatePad 11 (DBY-W09) by placing U-
 
 **H** recorded checks on one unlocked DBY-W09/HarmonyOS 4.2.0.213 cover Recovery → U-Boot → test/full Ubuntu boot (2026-11-02). Those **H** checks concern the historical ten-patch baseline. **O** rebuild evidence and the separate twelve-patch **R** observation are scoped below. Other units, firmware and stock-image combinations are **U**. These are development sources, not a universal installer or a verified-boot bypass. [Status and limits](https://github.com/youzjuzi/dby-w09-linux/blob/main/docs/status.md) separate current and historical evidence.
 
-This repository provides twelve patches against U-Boot v2026.10, configuration, board data, `build.sh` and `tools/pack-recovery.py`. It excludes stock Recovery, vendor firmware, Linux and Ubuntu. The [hub](https://github.com/youzjuzi/dby-w09-linux) owns drivers/bundles/rootfs/SD installation; the [kernel repository](https://github.com/youzjuzi/dby-w09-kernel) owns Linux patches, configuration and board DTS.
+This repository provides thirteen patches against U-Boot v2026.10, configuration, board data, `build.sh` and `tools/pack-recovery.py`. It excludes stock Recovery, vendor firmware, Linux and Ubuntu. The [hub](https://github.com/youzjuzi/dby-w09-linux) owns drivers/bundles/rootfs/SD installation; the [kernel repository](https://github.com/youzjuzi/dby-w09-kernel) owns Linux patches, configuration and board DTS.
 
 ## Reproduce the pinned build
 
@@ -24,15 +24,15 @@ JOBS=8 sh build.sh /path/to/u-boot-2026.10.tar.gz \
 sha256sum /path/to/new-build/out/u-boot.bin
 ```
 
-Both source/output paths must be new. `build.sh` checks archive SHA-256 `f943a88389c8fd70a6b0d061a88267465e143c7ca6ea2b75837ab20f5b60c739`, applies twelve patches with fuzz=0, copies the board inputs, runs olddefconfig and compares the final configuration. It sets `SOURCE_DATE_EPOCH=1791417600`, build user `builder` and host `offline`. `CROSS_COMPILE` defaults to `aarch64-linux-gnu-`, `JOBS` to 8. Do not ignore failed hashes, patch errors or configuration differences.
+Both source/output paths must be new. `build.sh` checks archive SHA-256 `f943a88389c8fd70a6b0d061a88267465e143c7ca6ea2b75837ab20f5b60c739`, applies thirteen patches with fuzz=0, copies the board inputs, runs olddefconfig and compares the final configuration. It sets `SOURCE_DATE_EPOCH=1791417600`, build user `builder` and host `offline`. `CROSS_COMPILE` defaults to `aarch64-linux-gnu-`, `JOBS` to 8. Do not ignore failed hashes, patch errors or configuration differences.
 
-Historical ten-patch output (O, reproduced after the earlier comment cleanup; not the current twelve-patch build):
+Historical ten-patch output (O, reproduced after the earlier comment cleanup; not the current build):
 
 ```text
 12213ff67f89ca67e528509cb0466006cfae55cae0af11009036f3c1c8516474  u-boot.bin
 ```
 
-## Current twelve-patch outputs (O, 2026-11-03)
+## Recorded twelve-patch outputs (O, 2026-11-03)
 
 The neutral version suffix is `-dby-w09`. On 2026-11-03 the owner flashed both candidates on one unlocked tablet (user observation, R): the default build showed the three-item menu and Ubuntu, HarmonyOS reboot and power off worked; the TWRP build additionally entered TWRP, and the other actions also worked. This is one device, one stock input and short checks; it is not a wider validation, and a rebuild does not carry the observation forward. The Recovery hashes use the same recorded stock input and apply only to that combination. The TWRP artifacts contain vendor content and must not be published as project binaries.
 
@@ -71,7 +71,7 @@ Linux additionally consumes `UBOOT/dby-device.img`; the hub's bundle manifest/in
 
 ## Storage boundary and limitations
 
-Source-level write gates (O) keep SD read-only. The internal exception clears only `misc`'s first 32 bytes after checking `boot-recovery` with a NUL terminator, then reads back to verify. Board-specific partition/framebuffer data must be checked before adapting to another device; a matching string is not proof that arbitrary geometry is safe. Details: [technical description](docs/how-it-works.md) (English).
+Source-level write gates (O) keep SD read-only. The internal exception clears only `misc`'s first 32 bytes after checking `boot-recovery` with a NUL terminator, then reads back to verify. When Linux `reboot recovery` enters through the PON restart reason with all 32 command bytes zero, U-Boot continues without writing or synchronizing `misc`; any other command is rejected. The MISC result is redrawn on the menu/failure screen, with only the 32 command bytes shown in hex for a rejected command. This new path awaits device validation (U). Board-specific partition/framebuffer data must be checked before adapting to another device; a matching string is not proof that arbitrary geometry is safe. Details: [technical description](docs/how-it-works.md) (English).
 
 While U-Boot occupies Recovery, factory reset is unavailable; restore your verified stock Recovery first. Do not flash other internal partitions. Hardware acceptance of a modified image is limited to the recorded unlocked device. The project does not supply stock images or promise compatibility with other firmware.
 

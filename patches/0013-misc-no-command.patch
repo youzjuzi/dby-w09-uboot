@@ -1,0 +1,119 @@
+--- a/cmd/misc-clear.c
++++ b/cmd/misc-clear.c
+@@ -27,6 +27,10 @@
+ static bool spent, invoked;
+ static struct udevice *bound;
+ static const void *payload;
++static const char *last_result = "NOT WRITTEN", *last_reason = "not invoked";
++static int last_rc = -EPERM;
++static bool show_command;
++static unsigned char rejected_command[32];
+
+ static void revoke(void)
+ {
+@@ -53,6 +57,15 @@
+ 	static const unsigned char expected[] = "boot-recovery";
+ 	return buf[13] == 0 && !memcmp(buf, expected, sizeof(expected) - 1);
+ }
++static bool no_command(const unsigned char *buf)
++{
++	unsigned int i;
++
++	for (i = 0; i < 32; i++)
++		if (buf[i])
++			return false;
++	return true;
++}
+ /* Sole caller in firmware: do_miscclear, after GPT and real read validation. */
+ static int arm(struct udevice *dev, const void *before, void *expected)
+ {
+@@ -109,6 +122,19 @@
+ 	if (permission != WRITE_SENT) return reject();
+ 	permission = SYNC_ARMED;
+ 	return 0;
++}
++/* Reprint the saved result after menu/SD code clears the display; no I/O. */
++void dby_misc_print_status(void)
++{
++	unsigned int i;
++
++	exp_diag_misc(last_result, last_reason, last_rc);
++	if (show_command) {
++		printf("MISC command[0:32]:");
++		for (i = 0; i < sizeof(rejected_command); i++)
++			printf(" %02x", rejected_command[i]);
++		printf("\n");
++	}
+ }
+ #ifndef DBY_MISC_HOST_TEST
+ int dby_clear_misc(void)
+@@ -160,9 +186,18 @@
+ 	blocks = blk_read(bdev, MISC_START, 1, before);
+ 	ret = blocks == 1 ? 0 : (blocks < 0 ? (int)blocks : -EIO);
+ 	if (ret) goto done;
++	if (no_command(before)) {
++		result = "NO COMMAND";
++		reason = "command field is all zero";
++		goto done;
++	}
+ 	reason = "command string is not boot-recovery";
+ 	ret = exact_command(before) ? 0 : -EINVAL;
+-	if (ret) goto done;
++	if (ret) {
++		memcpy(rejected_command, before, sizeof(rejected_command));
++		show_command = true;
++		goto done;
++	}
+ 	reason = "one-shot permission";
+ 	ret = arm(bdev, before, expected);
+ 	if (ret) goto done;
+@@ -190,7 +225,10 @@
+
+ done:
+ 	revoke();
+-	exp_diag_misc(result, reason, ret);
++	last_result = result;
++	last_reason = reason;
++	last_rc = ret;
++	dby_misc_print_status();
+ 	free(before); free(expected); free(after);
+ 	return ret;
+ }
+--- a/cmd/bootmenu.c
++++ b/cmd/bootmenu.c
+@@ -16,6 +16,7 @@
+ #include <malloc.h>
+ #include <linux/delay.h>
+ #include <linux/string.h>
++#include <diagnostic.h>
+
+ /* Only the board-owned menu opts into a non-exitable policy. */
+ bool __weak dby_bootmenu_fixed(void)
+@@ -502,6 +503,8 @@
+ 	puts(ANSI_CLEAR_LINE_TO_END);
+ 	printf(ANSI_CURSOR_POSITION, 3, 1);
+ 	puts(ANSI_CLEAR_LINE);
++	if (dby_bootmenu_fixed())
++		dby_misc_print_status();
+
+ 	/* First 3 lines are bootmenu header + 2 empty lines between entries */
+ 	printf(ANSI_CURSOR_POSITION, menu->count + 5, 1);
+--- a/cmd/sd-read.c
++++ b/cmd/sd-read.c
+@@ -267,6 +267,7 @@
+ done:
+ 	if (dir) fat_closedir(dir);
+ 	fat_close();
++	dby_misc_print_status();
+ 	exp_diag_sd(ret, step, misc_ret);
+ 	exp_diag_flush();
+ 	uclass_find_first_device(UCLASS_VIDEO_CONSOLE, &vc);
+--- a/include/diagnostic.h
++++ b/include/diagnostic.h
+@@ -4,5 +4,6 @@
+ struct sdhci_host;
+ void exp_diag_flush(void);
+ void exp_diag_misc(const char *result, const char *reason, int rc);
++void dby_misc_print_status(void);
+ void exp_diag_sd(int rc, const char *step, int misc_rc);
+ #endif

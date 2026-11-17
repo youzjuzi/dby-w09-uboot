@@ -42,8 +42,9 @@ typedef uint16_t u16;typedef unsigned long efi_uintn_t;typedef int efi_status_t;
 #define ANSI_CURSOR_SHOW ""
 #define simple_strtol strtol
 struct cmd_tbl {};
-static int fixed=1,selected,ran,timing_lines;
+static int fixed=1,selected,ran,timing_lines,misc_lines;
 void dby_twrp_print_timing(void){timing_lines++;}
+void dby_misc_print_status(void){misc_lines++;}
 static bool dby_bootmenu_fixed(void){return fixed;}
 static char *options[]={"Ubuntu=ubuntu","Harmony=reset","TWRP=twrp","Power off=poweroff",NULL};
 static char *env_get(const char *s){if(!strcmp(s,"bootmenu_default"))return "0";if(!strncmp(s,"bootmenu_",9)&&s[9]>='0'&&s[9]<='4')return options[s[9]-'0'];return NULL;}
@@ -61,7 +62,7 @@ static int menu_item_add(struct menu*m,const char*k,void*v){m->entries[m->count+
 static int menu_default_choice(struct menu*m,void **v){*v=m->entries[0];return 1;}
 static void menu_default_set(struct menu*m,const char*k){}
 static void menu_display_statusline(struct menu *m);
-static int menu_get_choice(struct menu*m,void **v){int before=timing_lines;menu_display_statusline(m);assert(timing_lines==before+fixed*CONFIG_DBY_TWRP);assert(selected<m->count);*v=m->entries[selected];return 1;}
+static int menu_get_choice(struct menu*m,void **v){int before=timing_lines,old_misc=misc_lines;menu_display_statusline(m);assert(timing_lines==before+fixed*CONFIG_DBY_TWRP);assert(misc_lines==old_misc+fixed);assert(selected<m->count);*v=m->entries[selected];return 1;}
 static void menu_destroy(struct menu*m){free(m);}
 static int efi_global_variable_guid;
 static int efi_init_obj_list(void){return 1;}

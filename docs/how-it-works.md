@@ -35,6 +35,8 @@ manual Recovery entry
 
 The `misc` partition is cleared because the stock Recovery flow leaves the command `boot-recovery` in it. Without clearing, the following reboot would re-enter Recovery.
 
+Linux `reboot recovery` can request Recovery through the PON restart reason without a misc command. After the same device/partition geometry checks and first-block read, an entirely zero 32-byte command field returns `NO COMMAND` and continues without arming, writing or synchronizing storage. A `boot-recovery` C string retains the existing clear/sync/full-block-readback flow; every other command is rejected. This new path awaits device validation (U). The saved MISC result/reason is redrawn after menu/SD screen clearing. A rejected command additionally shows only command bytes 0–31 in hex; no other block contents are printed.
+
 ## 4. Security design
 
 ### 4.1 Assets and assumptions
@@ -73,6 +75,7 @@ The assets to protect are the integrity of internal storage and the integrity of
 | 0010 | Acceptance of a gzip-compressed kernel image |
 | 0011 | Non-exitable board menu, with generic callers unchanged |
 | 0012 | Optional embedded recovery kernel and preserved ABL handoff |
+| 0013 | Accept an empty misc command without writes; retain MISC diagnostics after clearing the screen |
 
 ## 6. Evidence and limits
 
