@@ -71,7 +71,7 @@ Linux 另读取 `UBOOT/dby-device.img`，由中心仓库 bundle 清单／安装�
 
 ## 存储边界与限制
 
-源码写门禁（O）保持 SD 只读；内部存储例外仅在核对 `boot-recovery` 及 NUL 终止字节后清 `misc` 前 32 字节，再读回验证。Linux `reboot recovery` 通过 PON 重启原因进入、misc 命令区 32 字节全零时，U-Boot 不写入也不同步 misc，直接继续；其它命令仍拒绝。MISC 结果在菜单／失败画面重显，拒绝未知命令时仅显示这 32 字节的十六进制。新路径待实机验证（U）。适配其他设备前须核对板级分区／帧缓冲数据；字符串碰巧匹配不证明任意分区布局安全。详见[技术说明](docs/how-it-works.md)（英语）。
+源码写门禁（O）保持 SD 只读；内部存储例外仅在核对 `boot-recovery` 及 NUL 终止字节后清 `misc` 前 32 字节，再读回验证。Linux `reboot recovery` 通过 PON 重启原因进入、misc 命令区 32 字节全零时，U-Boot 不写入也不同步 misc，直接继续；其它命令仍拒绝。MISC 结果在菜单／失败画面重显，拒绝未知命令时仅显示这 32 字节的十六进制。实机(R,一台平板,2026-11-17,TWRP 版):PON 进入显示 `MISC NO COMMAND` 并出菜单;按键进入仍为 `MISC CLEARED OK`;回鸿蒙不回环。适配其他设备前须核对板级分区／帧缓冲数据；字符串碰巧匹配不证明任意分区布局安全。详见[技术说明](docs/how-it-works.md)（英语）。
 
 U-Boot 占用 Recovery 时无法恢复出厂设置，操作前先还原已校验的原厂 Recovery；不刷其他内部存储分区。修改镜像的硬件接受结果限于记录中的已解锁设备，不提供原厂镜像或其他固件兼容承诺。
 

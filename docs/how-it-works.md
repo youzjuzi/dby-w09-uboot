@@ -35,7 +35,7 @@ manual Recovery entry
 
 The `misc` partition is cleared because the stock Recovery flow leaves the command `boot-recovery` in it. Without clearing, the following reboot would re-enter Recovery.
 
-Linux `reboot recovery` can request Recovery through the PON restart reason without a misc command. After the same device/partition geometry checks and first-block read, an entirely zero 32-byte command field returns `NO COMMAND` and continues without arming, writing or synchronizing storage. A `boot-recovery` C string retains the existing clear/sync/full-block-readback flow; every other command is rejected. This new path awaits device validation (U). The saved MISC result/reason is redrawn after menu/SD screen clearing. A rejected command additionally shows only command bytes 0–31 in hex; no other block contents are printed.
+Linux `reboot recovery` can request Recovery through the PON restart reason without a misc command. After the same device/partition geometry checks and first-block read, an entirely zero 32-byte command field returns `NO COMMAND` and continues without arming, writing or synchronizing storage. A `boot-recovery` C string retains the existing clear/sync/full-block-readback flow; every other command is rejected. Device result (R, one tablet, 2026-11-17, TWRP build): PON entry shows `MISC NO COMMAND` and reaches the menu; key entry still shows `MISC CLEARED OK`; returning to HarmonyOS does not loop. The saved MISC result/reason is redrawn after menu/SD screen clearing. A rejected command additionally shows only command bytes 0–31 in hex; no other block contents are printed.
 
 ## 4. Security design
 
